@@ -4,7 +4,7 @@
 // credentials are NOT seeded — they come from ADS_<CODE>_* env vars or the
 // platform_configs table (see PATCH /platform-configs/:platformCode).
 import type { Db } from "./index.js";
-import { adPlatforms } from "./schema/index.js";
+import { adPlatforms, subscriptionPlans } from "./schema/index.js";
 
 export interface PlatformSeed {
   id: string;
@@ -203,6 +203,58 @@ export async function seedPlatforms(db: Db): Promise<number> {
         sortOrder: p.sortOrder,
       })
       .onConflictDoNothing({ target: adPlatforms.code });
+    n++;
+  }
+  return n;
+}
+
+/** Trial plan: what accounts without a subscription get (see lib/limits.ts). */
+export const PLAN_SEEDS = [
+  {
+    id: "b1e8f2a4-9c3d-4f7e-8a1b-5d6e7f8a9b0c",
+    slug: "trial",
+    name: "Trial",
+    audience: "both" as const,
+    price: 0,
+    currency: "SEK",
+    billingInterval: "month" as const,
+    trialDays: 14,
+    entitlements: {
+      workspaces: 3,
+      aiGenerations: 100,
+      brandCrawlsPerMonth: 20,
+      scheduledPostsPerMonth: 30,
+      activeCampaigns: 5,
+      platformConnections: 5,
+      templatesLimit: 10,
+      teamSeats: 3,
+      storageMb: 1024,
+    },
+    isActive: true,
+    displayOrder: 0,
+  },
+];
+
+/** Idempotent upsert of the plan catalog rows this backend depends on. */
+export async function seedPlans(db: Db): Promise<number> {
+  let n = 0;
+  for (const p of PLAN_SEEDS) {
+    await db
+      .insert(subscriptionPlans)
+      .values({
+        id: p.id,
+        slug: p.slug,
+        name: p.name,
+        audience: p.audience,
+        price: p.price,
+        currency: p.currency,
+        billingInterval: p.billingInterval,
+        trialDays: p.trialDays,
+        entitlements: p.entitlements,
+        isActive: p.isActive,
+        displayOrder: p.displayOrder,
+      })
+      .onConflictDoNothing({ target: subscriptionPlans.slug });
     n++;
   }
   return n;

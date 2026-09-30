@@ -7,6 +7,7 @@ import me from "./routes/me.js";
 import platforms from "./routes/platforms.js";
 import { campaignsRouter } from "./routes/campaigns.js";
 import aiRouter from "./routes/ai.js";
+import { billingRouter, handleBillingWebhook } from "./routes/billing.js";
 import { authMiddleware, tenantStatusGuard } from "./lib/auth.js";
 import { HttpError } from "./lib/filter.js";
 
@@ -32,11 +33,22 @@ export type Env = {
   /** Platform OAuth overrides (same ADS_<CODE>_* names as the old backend). */
   ADS_X_REDIRECT_URI?: string;
   ADS_BING_REDIRECT_URI?: string;
+  /** Stripe billing. */
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_PUBLISHABLE_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
 };
 
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/health", (c) => c.json({ data: { status: "ok" } }));
+
+// Public Stripe webhook — registered BEFORE any "/"-mounted sub-app: those
+// use bare `use()` middleware which Hono merges into the shared router as
+// global middleware for subsequently-registered routes. Registered here, the
+// handler runs first and returns without calling next(), so auth never fires.
+// The request is authenticated by the Stripe signature instead.
+app.post("/billing/webhook", handleBillingWebhook);
 
 // Public: auth flows (login/register/oauth hand the token to the caller).
 app.route("/auth", auth);
@@ -61,6 +73,9 @@ app.route("/", filesRouter);
 app.route("/", platforms);
 app.route("/", campaignsRouter);
 app.route("/", aiRouter);
+// Billing: the router's own middleware skips POST /billing/webhook
+// (public, Stripe-signature-verified).
+app.route("/", billingRouter);
 
 app.onError((err, c) => {
   if (err instanceof HttpError) {

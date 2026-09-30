@@ -13,8 +13,8 @@ export const userProfiles = sqliteTable(
     uiPreferences: text("uiPreferences", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
     onboardingChecklist: text("onboardingChecklist", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
     owner_id: text("owner_id"),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     uniqueIndex("user_profiles_owner_id_ux").on(t.owner_id),
@@ -31,8 +31,8 @@ export const notificationPreferences = sqliteTable(
     categories: text("categories", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
     digestFrequency: text("digestFrequency", { enum: ["instant", "daily", "weekly", "off"] }).notNull().default("instant"),
     recipient_id: text("recipient_id"),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     uniqueIndex("notification_preferences_recipient_id_ux").on(t.recipient_id),
@@ -52,11 +52,13 @@ export const subscriptionPlans = sqliteTable(
     trialDays: integer("trialDays").notNull().default(14),
     stripeProductId: text("stripeProductId"),
     stripePriceId: text("stripePriceId"),
+    stripeProductIdLive: text("stripeProductIdLive"),
+    stripePriceIdLive: text("stripePriceIdLive"),
     entitlements: text("entitlements", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
     isActive: integer("isActive", { mode: "boolean" }).notNull().default(true),
     displayOrder: integer("displayOrder").notNull().default(0),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     uniqueIndex("subscription_plans_slug_ux").on(t.slug),
@@ -78,8 +80,8 @@ export const subscriptions = sqliteTable(
     entitlementOverrides: text("entitlementOverrides", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
     plan_id: text("plan_id"),
     account_id: text("account_id").notNull(),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
 );
 
@@ -94,8 +96,8 @@ export const usageCounters = sqliteTable(
     limitValue: integer("limitValue"),
     workspace_id: text("workspace_id"),
     account_id: text("account_id").notNull(),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
 );
 
@@ -116,8 +118,8 @@ export const workspaceSettings = sqliteTable(
     extra: text("extra", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
     workspace_id: text("workspace_id"),
     account_id: text("account_id").notNull(),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     uniqueIndex("workspace_settings_workspace_id_ux").on(t.workspace_id),
@@ -129,12 +131,12 @@ export const dashboardMetricPrefs = sqliteTable(
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     platformCode: text("platformCode").notNull().default("all"),
-    metricKeys: text("metricKeys", { mode: "json" }).$type<any[]>().notNull().default(sql`[]`),
+    metricKeys: text("metricKeys", { mode: "json" }).$type<any[]>().notNull().default(sql`'[]'`),
     owner_id: text("owner_id"),
     workspace_id: text("workspace_id"),
     account_id: text("account_id").notNull(),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     uniqueIndex("dashboard_metric_prefs_owner_id_workspace_id_platformCode_ux").on(t.owner_id, t.workspace_id, t.platformCode),
@@ -148,13 +150,13 @@ export const deletionRequests = sqliteTable(
     scope: text("scope", { enum: ["user", "workspace", "account"] }).notNull().default("account"),
     targetId: text("targetId").notNull(),
     status: text("status", { enum: ["pending", "scheduled", "completed", "cancelled"] }).notNull().default("pending"),
-    requestedAt: integer("requestedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    requestedAt: integer("requestedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
     scheduledDeletionDate: integer("scheduledDeletionDate", { mode: "timestamp" }),
     completedAt: integer("completedAt", { mode: "timestamp" }),
     notes: text("notes"),
     requestedBy_id: text("requestedBy_id"),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
 );
 
@@ -168,8 +170,8 @@ export const billingSettings = sqliteTable(
     defaultCurrency: text("defaultCurrency").notNull().default("SEK"),
     trialDays: integer("trialDays").notNull().default(14),
     testMode: integer("testMode", { mode: "boolean" }).notNull().default(true),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
 );
 
@@ -188,7 +190,7 @@ export const aiSettings = sqliteTable(
     keyOverridden: integer("keyOverridden", { mode: "boolean" }).notNull().default(false),
     modelOverridden: integer("modelOverridden", { mode: "boolean" }).notNull().default(false),
     lastTest: text("lastTest", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
 );

@@ -49,9 +49,18 @@ export async function getPlanEntitlements(
       };
     }
   }
-  // No subscription yet (billing is Phase 6) — treat as a trial starter plan.
-  // Registration already creates one default workspace, so the trial allows
-  // a couple more; Phase 6 replaces this with real plan entitlements.
+  // No subscription yet — fall back to the seeded `trial` plan's entitlements
+  // (see seedPlans in src/db/seed.ts / drizzle/seed-plans.sql). Registration
+  // creates one default workspace, so the trial allows a couple more.
+  const trialPlans = await db
+    .select()
+    .from(subscriptionPlans)
+    .where(eq(subscriptionPlans.slug, "trial"))
+    .limit(1);
+  const trial = (trialPlans[0] as unknown as Record<string, any> | undefined) ?? null;
+  if (trial) {
+    return { entitlements: (trial.entitlements as Record<string, any>) || {}, planSlug: "trial" };
+  }
   return { entitlements: { workspaces: 3 }, planSlug: "trial" };
 }
 

@@ -16,6 +16,22 @@ function monthPeriod(now = new Date()): { start: Date; end: Date } {
 }
 
 /**
+ * Usage-counter metric keys (snake_case) → plan entitlement keys (camelCase).
+ * The old backend's /billing/usage mapped these; checkAndIncrement must use
+ * the same mapping or plan caps silently never apply.
+ */
+const METRIC_ENTITLEMENT: Record<string, string> = {
+  ai_generations: "aiGenerations",
+  brand_crawls: "brandCrawlsPerMonth",
+  scheduled_posts: "scheduledPostsPerMonth",
+};
+
+const entitlementFor = (entitlements: Record<string, any>, metricKey: string): number | null => {
+  const raw = entitlements[METRIC_ENTITLEMENT[metricKey] ?? metricKey];
+  return raw == null ? null : Number(raw);
+};
+
+/**
  * Charge `n` units of `metricKey` against the account's plan. Throws
  * 402/PLAN_LIMIT_REACHED when the entitlement is exhausted.
  */
@@ -25,8 +41,7 @@ export async function checkAndIncrement(
 ): Promise<{ count: number; limit: number | null }> {
   const { start, end } = monthPeriod();
   const { entitlements, planSlug } = await getPlanEntitlements(db, accountId);
-  const limitRaw = entitlements[metricKey];
-  const limit = limitRaw == null ? null : Number(limitRaw);
+  const limit = entitlementFor(entitlements, metricKey);
 
   const rows = await db
     .select()
@@ -59,4 +74,38 @@ export async function checkAndIncrement(
     });
   }
   return { count: next, limit };
+}
+
+/**
+ * Record `n` units of a flow metric without enforcing a cap (storage bytes,
+ * uploads — running totals the plan may not cap). Negative `n` decrements.
+ * Keyed by (account_id, metric, month period) like checkAndIncrement.
+ */
+export async function recordUsage(
+  db: Db,
+  { accountId, workspaceId, metricKey, n = 1 }: { accountId: string; workspaceId?: string | null; metricKey: string; n?: number },
+): Promise<{ count: number }> {
+  const { start, end } = monthPeriod();
+  const rows = await db
+    .select()
+    .from(usageCounters)
+    .where(and(eq(usageCounters.account_id, accountId), eq(usageCounters.metricKey, metricKey), eq(usageCounters.periodStart, start)));
+  const row = (rows[0] as unknown as Record<string, any> | undefined) ?? null;
+  const next = Number(row?.count || 0) + n;
+  if (row) {
+    await db.update(usageCounters).set({ count: next, updatedAt: new Date() }).where(eq(usageCounters.id, row.id));
+  } else {
+    await db.insert(usageCounters).values({
+      metricKey,
+      periodStart: start,
+      periodEnd: end,
+      count: next,
+      limitValue: null,
+      workspace_id: workspaceId || null,
+      account_id: accountId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
+  return { count: next };
 }
