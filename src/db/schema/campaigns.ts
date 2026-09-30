@@ -1,0 +1,122 @@
+import { sql } from "drizzle-orm";
+import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+export const campaigns = sqliteTable(
+  "campaigns",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    name: text("name").notNull(),
+    objective: text("objective", { enum: ["local_visits", "website_visitors", "online_sales", "leads", "messages", "awareness"] }).notNull().default("local_visits"),
+    status: text("status", { enum: ["draft", "scheduled", "active", "partial", "paused", "completed", "failed", "archived"] }).notNull().default("draft"),
+    budgetType: text("budgetType", { enum: ["daily", "lifetime"] }).notNull().default("daily"),
+    budgetAmount: real("budgetAmount"),
+    currency: text("currency").notNull().default("SEK"),
+    startDate: integer("startDate", { mode: "timestamp" }),
+    endDate: integer("endDate", { mode: "timestamp" }),
+    builderStage: text("builderStage", { enum: ["goal", "reach", "creative", "launch"] }).notNull().default("goal"),
+    draftState: text("draftState", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
+    hasUnpublishedChanges: integer("hasUnpublishedChanges", { mode: "boolean" }).notNull().default(false),
+    pendingChanges: text("pendingChanges", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
+    landingPageUrl: text("landingPageUrl"),
+    requireLandingApproval: integer("requireLandingApproval", { mode: "boolean" }).notNull().default(false),
+    landingPageApprovedAt: integer("landingPageApprovedAt", { mode: "timestamp" }),
+    trackingFinalUrl: text("trackingFinalUrl"),
+    includeGoogleTag: integer("includeGoogleTag", { mode: "boolean" }).notNull().default(false),
+    includeFacebookPixel: integer("includeFacebookPixel", { mode: "boolean" }).notNull().default(false),
+    tracking: text("tracking", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
+    autoOptimize: integer("autoOptimize", { mode: "boolean" }).notNull().default(false),
+    autoOptimizeConfig: text("autoOptimizeConfig", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
+    nextOptimizationAt: integer("nextOptimizationAt", { mode: "timestamp" }),
+    source: text("source", { enum: ["app", "template", "ai_suggestion", "import"] }).notNull().default("app"),
+    notes: text("notes"),
+    workspace_id: text("workspace_id"),
+    createdBy_id: text("createdBy_id"),
+    account_id: text("account_id").notNull(),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    deletedAt: integer("deletedAt", { mode: "timestamp" }),
+  },
+);
+
+export const campaignPlatforms = sqliteTable(
+  "campaign_platforms",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    status: text("status", { enum: ["pending", "publishing", "live", "paused", "failed", "rejected", "completed"] }).notNull().default("pending"),
+    externalCampaignId: text("externalCampaignId"),
+    campaignType: text("campaignType"),
+    nativeObjective: text("nativeObjective"),
+    budgetAmount: real("budgetAmount"),
+    spend: real("spend").notNull().default(0),
+    platformMessage: text("platformMessage"),
+    failureCode: text("failureCode"),
+    lastSyncedAt: integer("lastSyncedAt", { mode: "timestamp" }),
+    publishedAt: integer("publishedAt", { mode: "timestamp" }),
+    payload: text("payload", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
+    campaign_id: text("campaign_id"),
+    platform_id: text("platform_id"),
+    connection_id: text("connection_id"),
+    account_id: text("account_id").notNull(),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    uniqueIndex("campaign_platforms_campaign_id_platform_id_ux").on(t.campaign_id, t.platform_id),
+  ],
+);
+
+export const campaignIterations = sqliteTable(
+  "campaign_iterations",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    iterationNumber: integer("iterationNumber").notNull().default(1),
+    changeSummary: text("changeSummary"),
+    result: text("result", { enum: ["running", "winning", "retired"] }).notNull().default("running"),
+    ctr: real("ctr"),
+    impressions: integer("impressions").notNull().default(0),
+    score: real("score"),
+    promotedAt: integer("promotedAt", { mode: "timestamp" }),
+    snapshot: text("snapshot", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
+    campaign_id: text("campaign_id"),
+    account_id: text("account_id").notNull(),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    uniqueIndex("campaign_iterations_campaign_id_iterationNumber_ux").on(t.campaign_id, t.iterationNumber),
+  ],
+);
+
+export const campaignActivities = sqliteTable(
+  "campaign_activities",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    type: text("type", { enum: ["launched", "paused", "resumed", "edited", "synced", "rejected", "optimized", "approved", "info"] }).notNull().default("info"),
+    message: text("message").notNull(),
+    meta: text("meta", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
+    occurredAt: integer("occurredAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    campaign_id: text("campaign_id"),
+    actor_id: text("actor_id"),
+    account_id: text("account_id").notNull(),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+);
+
+export const campaignTemplates = sqliteTable(
+  "campaign_templates",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    name: text("name").notNull(),
+    description: text("description"),
+    objective: text("objective"),
+    definition: text("definition", { mode: "json" }).$type<Record<string, any>>().notNull().default(sql`'{}'`),
+    isGallery: integer("isGallery", { mode: "boolean" }).notNull().default(false),
+    formats: text("formats", { mode: "json" }).$type<string[]>().default(sql`[]`),
+    usageCount: integer("usageCount").notNull().default(0),
+    workspace_id: text("workspace_id"),
+    account_id: text("account_id").notNull(),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    deletedAt: integer("deletedAt", { mode: "timestamp" }),
+  },
+);
