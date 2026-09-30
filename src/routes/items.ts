@@ -18,11 +18,14 @@ import type { AnySQLiteColumn, SQLiteTable } from "drizzle-orm/sqlite-core";
 import { registry } from "../db/registry.js";
 import { compileFilter, HttpError } from "../lib/filter.js";
 import { parseFields, parseListQuery, type AggregateOp, type ListQuery } from "../lib/query.js";
+import { scopeItemsWhere, enforceWriteScope } from "../lib/auth.js";
+import { SECRET_FIELDS, encryptRowSecrets, maskRowSecrets } from "../lib/secrets.js";
 import type { Env } from "../index.js";
 
-// TODO(phase-2): mount auth middleware; enforce workspace scoping server-side from the session here.
-// The FE currently injects its own `workspace_id`/`account_id` equality filters; until auth
-// lands, those client-supplied filters are honored as-is.
+// Server-side scoping is enforced on every /items route (authMiddleware +
+// tenantStatusGuard run first in index.ts). The FE still sends its own
+// workspace_id filters; those are honored ANDed with the session-derived
+// constraint, so a forged filter can only narrow, never widen, access.
 
 type Db = ReturnType<typeof drizzle>;
 type AppContext = Context<{ Bindings: Env }>;
@@ -57,6 +60,38 @@ function whereClause(table: SQLiteTable, filter: unknown): SQL | undefined {
   return parts.length > 0 ? (and(...parts) as SQL) : undefined;
 }
 
+/** Client filter + paranoid guard + server-side session scoping. */
+async function scopedWhere(
+  c: AppContext,
+  collection: string,
+  table: SQLiteTable,
+  filter: unknown,
+): Promise<SQL | undefined> {
+  const parts = [
+    compileFilter(filter, table),
+    paranoidGuard(table),
+    await scopeItemsWhere(c, table, collection),
+  ].filter((p): p is SQL => p !== undefined);
+  return parts.length > 0 ? (and(...parts) as SQL) : undefined;
+}
+
+/** Encrypt secret fields on a write payload (no-op for other collections). */
+async function encryptWrite(
+  c: AppContext,
+  collection: string,
+  values: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (!SECRET_FIELDS[collection]) return values;
+  const key = c.env.SECRET_KEY;
+  if (!key) throw new HttpError(500, "SECRET_KEY is not configured", "SECRETS_UNCONFIGURED");
+  return encryptRowSecrets(collection, values, key);
+}
+
+/** Mask secret fields on rows leaving the API. */
+function maskRead(collection: string, row: Row): Row {
+  return maskRowSecrets(collection, row);
+}
+
 async function findOne(
   db: Db,
   table: SQLiteTable,
@@ -70,6 +105,25 @@ async function findOne(
   const rows: Row[] = selection
     ? ((await db.select(selection).from(table).where(where).limit(1)) as Row[])
     : ((await db.select().from(table).where(where).limit(1)) as Row[]);
+  return rows[0];
+}
+
+/** findOne + server-side session scoping (existence checks must not leak across scopes). */
+async function findOneScoped(
+  c: AppContext,
+  collection: string,
+  table: SQLiteTable,
+  id: string,
+  fields?: string[],
+): Promise<Row | undefined> {
+  const scope = await scopeItemsWhere(c, table, collection);
+  const where = and(eq(columnOf(table, "id"), id), paranoidGuard(table), scope);
+  const selection = fields
+    ? Object.fromEntries(fields.map((f) => [f, columnOf(table, f)]))
+    : undefined;
+  const rows: Row[] = selection
+    ? ((await drizzle(c.env.DB).select(selection).from(table).where(where).limit(1)) as Row[])
+    : ((await drizzle(c.env.DB).select().from(table).where(where).limit(1)) as Row[]);
   return rows[0];
 }
 
@@ -178,16 +232,21 @@ function aggregateSelection(
 // Bulk routes first: "/:collection/bulk" must win over "/:collection/:id" (where id would be "bulk").
 
 items.post("/:collection/bulk", async (c) => {
-  const table = getTable(c.req.param("collection"));
+  const collection = c.req.param("collection");
+  const table = getTable(collection);
   const body = await readJsonArray(c);
   const db = drizzle(c.env.DB);
   const rows: Row[] = [];
-  for (const item of body) rows.push(await insertRow(db, table, item));
+  for (const item of body) {
+    const scoped = await enforceWriteScope(c, table, item);
+    rows.push(maskRead(collection, await insertRow(db, table, await encryptWrite(c, collection, scoped))));
+  }
   return c.json({ data: rows });
 });
 
 items.patch("/:collection/bulk", async (c) => {
-  const table = getTable(c.req.param("collection"));
+  const collection = c.req.param("collection");
+  const table = getTable(collection);
   const body = await readJsonObject(c);
   const ids = body["ids"];
   const data = body["data"];
@@ -200,17 +259,19 @@ items.patch("/:collection/bulk", async (c) => {
   const db = drizzle(c.env.DB);
   const rows: Row[] = [];
   for (const id of ids) {
-    const existing = await findOne(db, table, id);
+    const existing = await findOneScoped(c, collection, table, id);
     if (!existing) {
       return c.json({ error: { code: "NOT_FOUND", message: `Row "${id}" not found` } }, 404);
     }
-    rows.push(await updateRow(db, table, id, data as Record<string, unknown>));
+    const scoped = await enforceWriteScope(c, table, data as Record<string, unknown>);
+    rows.push(maskRead(collection, await updateRow(db, table, id, await encryptWrite(c, collection, scoped))));
   }
   return c.json({ data: rows });
 });
 
 items.delete("/:collection/bulk", async (c) => {
-  const table = getTable(c.req.param("collection"));
+  const collection = c.req.param("collection");
+  const table = getTable(collection);
   const body = await readJsonObject(c);
   const ids = body["ids"];
   if (!Array.isArray(ids) || !ids.every((v): v is string => typeof v === "string")) {
@@ -219,7 +280,7 @@ items.delete("/:collection/bulk", async (c) => {
   const db = drizzle(c.env.DB);
   const deletedIds: string[] = [];
   for (const id of ids) {
-    const existing = await findOne(db, table, id);
+    const existing = await findOneScoped(c, collection, table, id);
     if (!existing) continue;
     await deleteRow(db, table, id);
     deletedIds.push(id);
@@ -228,10 +289,11 @@ items.delete("/:collection/bulk", async (c) => {
 });
 
 items.get("/:collection", async (c) => {
-  const table = getTable(c.req.param("collection"));
+  const collection = c.req.param("collection");
+  const table = getTable(collection);
   const q = parseListQuery(new URL(c.req.url).searchParams, table);
   const db = drizzle(c.env.DB);
-  const where = whereClause(table, q.filter);
+  const where = await scopedWhere(c, collection, table, q.filter);
 
   if (q.groupBy.length > 0) {
     const groupCols = q.groupBy.map((g) => columnOf(table, g));
@@ -271,38 +333,44 @@ items.get("/:collection", async (c) => {
         .offset(q.offset)) as Row[]);
   const totalRows = await db.select({ value: count() }).from(table).where(where);
   const totalCount = totalRows[0]?.value ?? 0;
-  return c.json({ data: rows, totalCount });
+  return c.json({ data: rows.map((r) => maskRead(collection, r)), totalCount });
 });
 
 items.get("/:collection/:id", async (c) => {
-  const table = getTable(c.req.param("collection"));
+  const collection = c.req.param("collection");
+  const table = getTable(collection);
   const fields = parseFields(c.req.query("fields") ?? null, table);
-  const row = await findOne(drizzle(c.env.DB), table, c.req.param("id"), fields);
+  const row = await findOneScoped(c, collection, table, c.req.param("id"), fields);
   if (!row) return c.json({ error: { code: "NOT_FOUND" } }, 404);
-  return c.json({ data: row });
+  return c.json({ data: maskRead(collection, row) });
 });
 
 items.post("/:collection", async (c) => {
-  const table = getTable(c.req.param("collection"));
-  const row = await insertRow(drizzle(c.env.DB), table, await readJsonObject(c));
-  return c.json({ data: row });
+  const collection = c.req.param("collection");
+  const table = getTable(collection);
+  const scoped = await enforceWriteScope(c, table, await readJsonObject(c));
+  const row = await insertRow(drizzle(c.env.DB), table, await encryptWrite(c, collection, scoped));
+  return c.json({ data: maskRead(collection, row) });
 });
 
 items.patch("/:collection/:id", async (c) => {
-  const table = getTable(c.req.param("collection"));
+  const collection = c.req.param("collection");
+  const table = getTable(collection);
   const db = drizzle(c.env.DB);
   const id = c.req.param("id");
-  const existing = await findOne(db, table, id);
+  const existing = await findOneScoped(c, collection, table, id);
   if (!existing) return c.json({ error: { code: "NOT_FOUND" } }, 404);
-  const row = await updateRow(db, table, id, await readJsonObject(c));
-  return c.json({ data: row });
+  const scoped = await enforceWriteScope(c, table, await readJsonObject(c));
+  const row = await updateRow(db, table, id, await encryptWrite(c, collection, scoped));
+  return c.json({ data: maskRead(collection, row) });
 });
 
 items.delete("/:collection/:id", async (c) => {
-  const table = getTable(c.req.param("collection"));
+  const collection = c.req.param("collection");
+  const table = getTable(collection);
   const db = drizzle(c.env.DB);
   const id = c.req.param("id");
-  const existing = await findOne(db, table, id);
+  const existing = await findOneScoped(c, collection, table, id);
   if (!existing) return c.json({ error: { code: "NOT_FOUND" } }, 404);
   await deleteRow(db, table, id);
   return c.json({ data: { id, deleted: true } });
