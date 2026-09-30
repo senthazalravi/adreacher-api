@@ -31,9 +31,19 @@ npm run dev
 
 ## Deploy
 
+## Deploy
+
 ```bash
 npx wrangler d1 migrations apply adreacher --remote
 npx wrangler deploy
 ```
 
-Auth is not yet implemented (Phase 2) — endpoints are currently unprotected.
+Required worker secrets: `JWT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+`ELASTICEMAIL_API_KEY`, `ELASTICEMAIL_FROM` (see Phase 2 notes).
+
+## Migrations note
+
+`drizzle/*.sql` is the source of truth for applying migrations. The large
+`drizzle/meta/*snapshot.json` files are maintained in the primary checkout
+and not all are committed (tooling file-size limits) — generate new
+migrations there with `npm run db:generate`.
