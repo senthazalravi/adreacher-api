@@ -5,6 +5,7 @@ import filesRouter from "./routes/files.js";
 import auth from "./routes/auth.js";
 import me from "./routes/me.js";
 import platforms from "./routes/platforms.js";
+import { campaignsRouter } from "./routes/campaigns.js";
 import { authMiddleware, tenantStatusGuard } from "./lib/auth.js";
 import { HttpError } from "./lib/filter.js";
 
@@ -51,6 +52,7 @@ app.route("/items", items);
 app.route("/me", me);
 app.route("/", filesRouter);
 app.route("/", platforms);
+app.route("/", campaignsRouter);
 
 app.onError((err, c) => {
   if (err instanceof HttpError) {
