@@ -123,14 +123,133 @@ export const buildPrompt = (b: BrandView, theme: string, hasRefs: boolean, lesso
     lessons,
   ].filter(Boolean).join(" ");
 
-/** AI image/copy generation — Phase 5. */
-export async function generateOne(): Promise<never> {
-  throw new HttpError(501, "AI creative generation arrives in Phase 5", "NOT_IMPLEMENTED");
+import type { R2Bucket } from "@cloudflare/workers-types";
+import { generateAdImage, saveGeneratedImage } from "./ai-images.js";
+import { creativeCopy, type AiEnv, type BrandLike } from "./ai-text.js";
+
+/** AI image/copy generation. Port of the old lib/creatives.js generateOne. */
+export async function generateOne(
+  db: Db,
+  r2: R2Bucket,
+  env: AiEnv,
+  creativeId: string,
+  { ws, uid, brand, refs, campaign, lessons }: {
+    ws: { id: string; accountId: string };
+    uid?: string | null;
+    brand: BrandView;
+    refs: string[];
+    campaign?: { objective?: string } | null;
+    lessons?: { image: string; copy: string };
+  },
+): Promise<void> {
+  const rows = await db.select().from(creatives).where(eq(creatives.id, creativeId)).limit(1);
+  const row = rows[0] as unknown as Record<string, any> | undefined;
+  if (!row) return;
+  try {
+    const ctx = { env, db, r2, ws, uid };
+    const [img, copy] = await Promise.all([
+      generateAdImage(ctx, row.prompt, "4:5", refs),
+      creativeCopy(env, db, { brand: brand as unknown as BrandLike, theme: row.subject, objective: campaign?.objective, language: null, avoid: lessons?.copy }),
+    ]);
+    const buf = await (await fetch(img.imageUrl, { signal: AbortSignal.timeout(60000) })).arrayBuffer();
+    const asset = await saveGeneratedImage({
+      db,
+      r2,
+      publicBaseUrl: env.API_PUBLIC_URL,
+      workspaceId: ws.id,
+      accountId: ws.accountId,
+      uid,
+      buffer: buf,
+      fileName: `creative-${creativeId.slice(0, 8)}.png`,
+      mimeType: "image/png",
+      tags: ["ai-generated", "creative"],
+      metadata: { prompt: row.prompt, model: img.model },
+    });
+    await db
+      .update(creatives)
+      .set({
+        status: "pending",
+        mediaAsset_id: asset.id,
+        headline: copy.headline,
+        body: copy.body,
+        generatedAt: new Date(),
+        generationMeta: { ...(row.generationMeta || {}), model: img.model, cta: copy.cta, sourceImageUrl: img.imageUrl },
+        updatedAt: new Date(),
+      })
+      .where(eq(creatives.id, creativeId));
+  } catch (e: any) {
+    await db
+      .update(creatives)
+      .set({
+        status: "rejected",
+        rejectReason: "other",
+        rejectNote: `Generation failed: ${e.message}`,
+        generationMeta: { ...(row.generationMeta || {}), failed: true, error: e.message },
+        updatedAt: new Date(),
+      })
+      .where(eq(creatives.id, creativeId));
+  }
 }
 
-/** AI batch generation — Phase 5. */
-export async function startBatch(): Promise<never> {
-  throw new HttpError(501, "AI creative generation arrives in Phase 5", "NOT_IMPLEMENTED");
+/**
+ * Create `count` creative rows and generate them sequentially in the background.
+ * Returns the ids immediately plus a `done` promise for waitUntil; pass
+ * `wait: true` to await generation inline instead. Port of the old startBatch.
+ */
+export async function startBatch(
+  db: Db,
+  r2: R2Bucket,
+  env: AiEnv,
+  { ws, uid = null, brand, count, campaign = null, source = "manual", wait = false }: {
+    ws: { id: string; accountId: string };
+    uid?: string | null;
+    brand: BrandView;
+    count: number;
+    campaign?: { id?: string; objective?: string } | null;
+    source?: string;
+    wait?: boolean;
+  },
+): Promise<{ ids: string[]; done: Promise<void> }> {
+  if (active.has(ws.id)) {
+    const e = new HttpError(409, "Creative generation is already in progress for this workspace", "GENERATION_IN_PROGRESS");
+    throw e;
+  }
+  const lessons = await rejectionLessons(db, ws.id);
+  const refs = refsFor(brand);
+  const ids: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const theme = THEMES[i % THEMES.length] ?? "Bold product-focused hero shot";
+    const inserted = await db
+      .insert(creatives)
+      .values({
+        workspace_id: ws.id,
+        account_id: ws.accountId,
+        campaign_id: campaign?.id || null,
+        status: "generating",
+        isAiGenerated: true,
+        prompt: buildPrompt(brand, theme, brand.references.length > 0, lessons.image),
+        subject: theme,
+        shotType: theme.split(" ").slice(0, 3).join(" ").toLowerCase(),
+        aspectRatios: ["4:5"],
+        placements: ["meta_feed", "meta_stories", "google_pmax"],
+        brandContext: { businessName: brand.name, tagline: brand.tagline, industry: brand.industry, primaryColor: brand.primaryColor, logoUrl: brand.logoUrl, sourceUrl: brand.sourceUrl },
+        generationMeta: { variantIndex: i + 1, batchSize: count, requestedBy: uid, source, learnedFromRejections: Boolean(lessons.image) },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning({ id: creatives.id });
+    ids.push(inserted[0]!.id);
+  }
+  active.add(ws.id);
+  const run = (async () => {
+    try {
+      for (const id of ids) await generateOne(db, r2, env, id, { ws, uid, brand, refs, campaign, lessons });
+    } finally {
+      active.delete(ws.id);
+    }
+  })();
+  if (wait) await run;
+  return { ids, done: run };
 }
 
 /**

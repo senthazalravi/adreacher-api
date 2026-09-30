@@ -6,6 +6,7 @@ import auth from "./routes/auth.js";
 import me from "./routes/me.js";
 import platforms from "./routes/platforms.js";
 import { campaignsRouter } from "./routes/campaigns.js";
+import aiRouter from "./routes/ai.js";
 import { authMiddleware, tenantStatusGuard } from "./lib/auth.js";
 import { HttpError } from "./lib/filter.js";
 
@@ -22,6 +23,12 @@ export type Env = {
   API_PUBLIC_URL?: string;
   /** Public URL of the frontend app (for email links). */
   APP_URL?: string;
+  /** AI studio (Gemini text, fal.ai images). */
+  GEMINI_API_KEY?: string;
+  AI_TEXT_MODEL?: string;
+  AI_FALLBACK_MODEL?: string;
+  FAL_API_KEY?: string;
+  FAL_KEY?: string;
   /** Platform OAuth overrides (same ADS_<CODE>_* names as the old backend). */
   ADS_X_REDIRECT_URI?: string;
   ADS_BING_REDIRECT_URI?: string;
@@ -53,6 +60,7 @@ app.route("/me", me);
 app.route("/", filesRouter);
 app.route("/", platforms);
 app.route("/", campaignsRouter);
+app.route("/", aiRouter);
 
 app.onError((err, c) => {
   if (err instanceof HttpError) {
