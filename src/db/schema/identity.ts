@@ -11,10 +11,13 @@ export const users = sqliteTable("users", {
   firstName: text("firstName"),
   lastName: text("lastName"),
   tenantId: text("tenantId"),
+  activeWorkspaceId: text("activeWorkspaceId"),
   emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
   twoFactorEnabled: integer("twoFactorEnabled", { mode: "boolean" }).notNull().default(false),
-  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  totpSecret: text("totpSecret"),
+  platformAdmin: integer("platformAdmin", { mode: "boolean" }).notNull().default(false),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   deletedAt: integer("deletedAt", { mode: "timestamp" }),
 });
 
@@ -22,7 +25,9 @@ export const tenants = sqliteTable("tenants", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   name: text("name").notNull(),
   slug: text("slug").notNull().unique(),
-  status: text("status").notNull().default("active"),
+  type: text("type", { enum: ["client", "agency"] }).notNull().default("client"),
+  status: text("status", { enum: ["active", "suspended", "closed"] }).notNull().default("active"),
+  ownerId: text("ownerId"),
   planSlug: text("planSlug"),
   billingEmail: text("billingEmail"),
   contactPerson: text("contactPerson"),
@@ -30,20 +35,19 @@ export const tenants = sqliteTable("tenants", {
   address: text("address", { mode: "json" }).$type<Record<string, any>>(),
   country: text("country"),
   orgNumber: text("orgNumber"),
-  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   deletedAt: integer("deletedAt", { mode: "timestamp" }),
 });
 
-export const invites = sqliteTable("invites", {
-  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+export const invites = sqliteTable("invites", {  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   email: text("email").notNull(),
   tenantId: text("tenantId").notNull(),
   role: text("role").notNull(),
   token: text("token").notNull().unique(),
   expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
   acceptedAt: integer("acceptedAt", { mode: "timestamp" }),
-  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
 export const notifications = sqliteTable("notifications", {
@@ -55,7 +59,7 @@ export const notifications = sqliteTable("notifications", {
   body: text("body"),
   data: text("data", { mode: "json" }).$type<Record<string, any>>(),
   seenAt: integer("seenAt", { mode: "timestamp" }),
-  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
 export const auditLog = sqliteTable("audit_log", {
@@ -66,7 +70,7 @@ export const auditLog = sqliteTable("audit_log", {
   entityType: text("entityType"),
   entityId: text("entityId"),
   meta: text("meta", { mode: "json" }).$type<Record<string, any>>(),
-  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
 export const files = sqliteTable("files", {
@@ -79,5 +83,23 @@ export const files = sqliteTable("files", {
   title: text("title"),
   isPublic: integer("isPublic", { mode: "boolean" }).notNull().default(false),
   folder: text("folder"),
-  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
+// Single-use token store: password resets, email verification, magic links,
+// and staff invites. Only the SHA-256 hash of the token is stored; the raw
+// token is returned once at creation time.
+export const userTokens = sqliteTable("user_tokens", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text("userId"),
+  email: text("email").notNull(),
+  tenantId: text("tenantId"),
+  type: text("type", {
+    enum: ["password_reset", "email_verify", "magic_link", "invite"],
+  }).notNull(),
+  tokenHash: text("tokenHash").notNull().unique(),
+  data: text("data", { mode: "json" }).$type<Record<string, any>>(),
+  expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
+  usedAt: integer("usedAt", { mode: "timestamp" }),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
