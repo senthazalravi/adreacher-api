@@ -18,8 +18,9 @@ import type { AnySQLiteColumn, SQLiteTable } from "drizzle-orm/sqlite-core";
 import { registry } from "../db/registry.js";
 import { compileFilter, HttpError } from "../lib/filter.js";
 import { parseFields, parseListQuery, type AggregateOp, type ListQuery } from "../lib/query.js";
-import { scopeItemsWhere, enforceWriteScope } from "../lib/auth.js";
+import { scopeItemsWhere, enforceWriteScope, sessionOf } from "../lib/auth.js";
 import { SECRET_FIELDS, encryptRowSecrets, maskRowSecrets } from "../lib/secrets.js";
+import { bootstrapWorkspace } from "../lib/workspace.js";
 import type { Env } from "../index.js";
 
 // Server-side scoping is enforced on every /items route (authMiddleware +
@@ -349,6 +350,20 @@ items.post("/:collection", async (c) => {
   const collection = c.req.param("collection");
   const table = getTable(collection);
   const scoped = await enforceWriteScope(c, table, await readJsonObject(c));
+  // Workspace creation also bootstraps workspace_settings + an owner
+  // membership, and enforces the plan's workspace limit (402 when reached).
+  if (collection === "workspaces") {
+    const s = sessionOf(c);
+    const { name, slug, account_id, id, ...extra } = scoped as Record<string, unknown>;
+    const ws = await bootstrapWorkspace(drizzle(c.env.DB), {
+      accountId: String(account_id ?? s.tenantId),
+      userId: s.userId,
+      name: String(name ?? "Workspace"),
+      slug: slug ? String(slug) : undefined,
+      extra,
+    });
+    return c.json({ data: maskRead(collection, ws as Row) });
+  }
   const row = await insertRow(drizzle(c.env.DB), table, await encryptWrite(c, collection, scoped));
   return c.json({ data: maskRead(collection, row) });
 });

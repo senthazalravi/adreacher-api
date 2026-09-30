@@ -39,7 +39,8 @@ npx wrangler deploy
 ```
 
 Required worker secrets: `JWT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-`ELASTICEMAIL_API_KEY`, `ELASTICEMAIL_FROM` (see Phase 2 notes).
+`RESEND_API_KEY`, `EMAIL_FROM` (transactional email via Resend; see Phase 2 notes).
+Note: verify the sending domain in the Resend dashboard before production sends.
 
 ## Migrations note
 

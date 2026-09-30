@@ -4,6 +4,7 @@ import items from "./routes/items.js";
 import filesRouter from "./routes/files.js";
 import auth from "./routes/auth.js";
 import me from "./routes/me.js";
+import platforms from "./routes/platforms.js";
 import { authMiddleware, tenantStatusGuard } from "./lib/auth.js";
 import { HttpError } from "./lib/filter.js";
 
@@ -14,12 +15,15 @@ export type Env = {
   SECRET_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
-  ELASTICEMAIL_API_KEY?: string;
-  ELASTICEMAIL_FROM?: string;
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
   /** Public URL of this API worker (for OAuth redirect_uri). */
   API_PUBLIC_URL?: string;
   /** Public URL of the frontend app (for email links). */
   APP_URL?: string;
+  /** Platform OAuth overrides (same ADS_<CODE>_* names as the old backend). */
+  ADS_X_REDIRECT_URI?: string;
+  ADS_BING_REDIRECT_URI?: string;
 };
 
 const app = new Hono<{ Bindings: Env }>();
@@ -36,10 +40,17 @@ app.use("/items/*", authMiddleware);
 app.use("/items/*", tenantStatusGuard);
 app.use("/me/*", authMiddleware);
 app.use("/me/*", tenantStatusGuard);
+app.use("/platforms*", authMiddleware);
+app.use("/platforms*", tenantStatusGuard);
+app.use("/platform-connections*", authMiddleware);
+app.use("/platform-connections*", tenantStatusGuard);
+app.use("/platform-configs*", authMiddleware);
+app.use("/platform-configs*", tenantStatusGuard);
 
 app.route("/items", items);
 app.route("/me", me);
 app.route("/", filesRouter);
+app.route("/", platforms);
 
 app.onError((err, c) => {
   if (err instanceof HttpError) {
@@ -49,6 +60,9 @@ app.onError((err, c) => {
         error: {
           code: err.code ?? (status === 404 ? "NOT_FOUND" : "BAD_REQUEST"),
           message: err.message,
+          ...(err instanceof Object && "detail" in err && (err as { detail?: unknown }).detail
+            ? { detail: (err as { detail?: unknown }).detail }
+            : {}),
         },
       },
       status as 400,
