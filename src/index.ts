@@ -8,6 +8,8 @@ import platforms from "./routes/platforms.js";
 import { campaignsRouter } from "./routes/campaigns.js";
 import aiRouter from "./routes/ai.js";
 import { billingRouter, handleBillingWebhook } from "./routes/billing.js";
+import jobsRouter from "./routes/jobs.js";
+import { dispatchCron } from "./jobs/index.js";
 import { authMiddleware, tenantStatusGuard } from "./lib/auth.js";
 import { HttpError } from "./lib/filter.js";
 
@@ -66,6 +68,8 @@ app.use("/platform-connections*", authMiddleware);
 app.use("/platform-connections*", tenantStatusGuard);
 app.use("/platform-configs*", authMiddleware);
 app.use("/platform-configs*", tenantStatusGuard);
+app.use("/workers/*", authMiddleware);
+app.use("/workers/*", tenantStatusGuard);
 
 app.route("/items", items);
 app.route("/me", me);
@@ -76,6 +80,8 @@ app.route("/", aiRouter);
 // Billing: the router's own middleware skips POST /billing/webhook
 // (public, Stripe-signature-verified).
 app.route("/", billingRouter);
+// Worker job history (admin UI polls these).
+app.route("/", jobsRouter);
 
 app.onError((err, c) => {
   if (err instanceof HttpError) {
@@ -107,4 +113,12 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ error: { code: "NOT_FOUND" } }, 404));
 
-export default app;
+// Cron Triggers dispatch here (see "triggers.crons" in wrangler.jsonc).
+// Each tick runs the matching job wrapped in recordRun; unknown schedules
+// are logged and ignored so a stray trigger can never crash the worker.
+export default {
+  fetch: (request: Request, env: Env, ctx: ExecutionContext) => app.fetch(request, env, ctx),
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(dispatchCron(event.cron, env));
+  },
+};

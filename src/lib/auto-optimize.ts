@@ -7,7 +7,7 @@
 //
 // Settings, scoring, and metrics are non-AI and fully working here. The iteration itself
 // (AI copy improvement + AI creative generation) arrives in Phase 5.
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lte } from "drizzle-orm";
 import { campaignAnalytics, workspaceSettings } from "../db/schema/index.js";
 import type { Db } from "../db/index.js";
 import { HttpError } from "./filter.js";
@@ -75,7 +75,32 @@ export async function runIteration(
   throw new HttpError(501, "Auto-optimise iterations arrive in Phase 5", "NOT_IMPLEMENTED");
 }
 
-/** Run every workspace's due optimisation loops. AI-driven — Phase 5 (cron wiring in Phase 7). */
-export async function runDueLoops(_db: Db, _env: Record<string, string | undefined>): Promise<never> {
-  throw new HttpError(501, "Auto-optimise iterations arrive in Phase 5", "NOT_IMPLEMENTED");
+/** Run every workspace's due optimisation loops. Port of the old runDueLoops:
+ *  every campaign with autoOptimize on whose next run is due gets one
+ *  runIteration; per-campaign failures are collected, not thrown. */
+export async function runDueLoops(
+  db: Db,
+  env: Record<string, string | undefined>,
+): Promise<{ processed: number; errors: string[] }> {
+  const { campaigns } = await import("../db/schema/index.js");
+  const due = await db
+    .select({ id: campaigns.id, name: campaigns.name })
+    .from(campaigns)
+    .where(
+      and(
+        eq(campaigns.autoOptimize, true),
+        lte(campaigns.nextOptimizationAt, new Date()),
+        isNull(campaigns.deletedAt),
+      ),
+    )
+    .limit(50);
+  const errors: string[] = [];
+  for (const c of due) {
+    try {
+      await runIteration(db, env, c.id, { trigger: "scheduled" });
+    } catch (e) {
+      errors.push(`${c.name}: ${(e as Error)?.message || String(e)}`);
+    }
+  }
+  return { processed: due.length, errors };
 }

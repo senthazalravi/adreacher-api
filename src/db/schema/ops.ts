@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 export const userProfiles = sqliteTable(
   "user_profiles",
   {
@@ -193,4 +193,28 @@ export const aiSettings = sqliteTable(
     createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
     updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
+);
+
+/**
+ * Run-history ledger for scheduled jobs (Phase 7). Port of lib/job-runs.js:
+ * one row per run — the admin Workers page reads these to show what ran,
+ * when, how long it took and what failed.
+ */
+export const jobRuns = sqliteTable(
+  "job_runs",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    name: text("name").notNull(),
+    status: text("status", { enum: ["processing", "completed", "failed"] }).notNull().default("processing"),
+    startedAt: integer("startedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    finishedAt: integer("finishedAt", { mode: "timestamp" }),
+    durationMs: integer("durationMs"),
+    result: text("result", { mode: "json" }).$type<Record<string, any>>(),
+    error: text("error", { mode: "json" }).$type<Record<string, any>>(),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+  },
+  (t) => [
+    index("job_runs_name_started_idx").on(t.name, t.startedAt),
+  ],
 );
