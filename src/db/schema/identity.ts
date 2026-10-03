@@ -47,6 +47,9 @@ export const invites = sqliteTable("invites", {  id: text("id").primaryKey().$de
   token: text("token").notNull().unique(),
   expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
   acceptedAt: integer("acceptedAt", { mode: "timestamp" }),
+  status: text("status", { enum: ["pending", "accepted", "revoked", "expired"] }).notNull().default("pending"),
+  invitedBy: text("invitedBy"),
+  workspaceIds: text("workspaceIds", { mode: "json" }).$type<string[] | null>(),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 

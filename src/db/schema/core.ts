@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 export const workspaces = sqliteTable(
   "workspaces",
   {
@@ -18,8 +18,9 @@ export const workspaces = sqliteTable(
     onboardingCompletedAt: integer("onboardingCompletedAt", { mode: "timestamp" }),
     isDefault: integer("isDefault", { mode: "boolean" }).notNull().default(false),
     account_id: text("account_id").notNull(),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    client_id: text("client_id"),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
     deletedAt: integer("deletedAt", { mode: "timestamp" }),
   },
 );
@@ -35,8 +36,8 @@ export const workspaceMembers = sqliteTable(
     workspace_id: text("workspace_id"),
     member_id: text("member_id"),
     account_id: text("account_id").notNull(),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     uniqueIndex("workspace_members_workspace_id_member_id_ux").on(t.workspace_id, t.member_id),
@@ -53,8 +54,8 @@ export const agencyClients = sqliteTable(
     notes: text("notes"),
     agency_id: text("agency_id"),
     client_id: text("client_id"),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
     deletedAt: integer("deletedAt", { mode: "timestamp" }),
   },
   (t) => [
@@ -67,15 +68,40 @@ export const agencyStaffWorkspaces = sqliteTable(
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     role: text("role", { enum: ["lead", "editor", "approver", "viewer"] }).notNull().default("editor"),
-    assignedAt: integer("assignedAt", { mode: "timestamp" }).default(sql`CURRENT_TIMESTAMP`),
+    assignedAt: integer("assignedAt", { mode: "timestamp" }).$defaultFn(() => new Date()),
     status: text("status", { enum: ["active", "revoked"] }).notNull().default("active"),
     agency_id: text("agency_id"),
     staff_id: text("staff_id"),
     workspace_id: text("workspace_id"),
-    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
   },
   (t) => [
     uniqueIndex("agency_staff_workspaces_agency_id_staff_id_workspace_id_ux").on(t.agency_id, t.staff_id, t.workspace_id),
   ],
+);
+
+/** A client is a business the agency works for. It owns one or more workspaces. */
+export const clients = sqliteTable(
+  "clients",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    agencyTenantId: text("agencyTenantId").notNull(),
+    name: text("name").notNull(),
+    orgNumber: text("orgNumber"),
+    contactPerson: text("contactPerson"),
+    contactEmail: text("contactEmail"),
+    contactPhone: text("contactPhone"),
+    contactWhatsapp: text("contactWhatsapp"),
+    websiteUrl: text("websiteUrl"),
+    country: text("country"),
+    currency: text("currency").notNull().default("SEK"),
+    notes: text("notes"),
+    status: text("status", { enum: ["active", "inactive"] }).notNull().default("active"),
+    features: text("features", { mode: "json" }).$type<Record<string, boolean>>().notNull().default(sql`'{}'`),
+    createdAt: integer("createdAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+    deletedAt: integer("deletedAt", { mode: "timestamp" }),
+  },
+  (t) => [index("clients_agency_tenant_idx").on(t.agencyTenantId)],
 );

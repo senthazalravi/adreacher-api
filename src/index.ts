@@ -9,6 +9,11 @@ import { campaignsRouter } from "./routes/campaigns.js";
 import aiRouter from "./routes/ai.js";
 import { billingRouter, handleBillingWebhook } from "./routes/billing.js";
 import jobsRouter from "./routes/jobs.js";
+import notificationsRouter from "./routes/notifications.js";
+import schedulingRouter from "./routes/scheduling.js";
+import agencyRouter from "./routes/agency.js";
+import superAdminRouter from "./routes/super-admin.js";
+import onboardingRouter from "./routes/onboarding.js";
 import { dispatchCron } from "./jobs/index.js";
 import { authMiddleware, tenantStatusGuard } from "./lib/auth.js";
 import { HttpError } from "./lib/filter.js";
@@ -75,6 +80,11 @@ app.route("/items", items);
 app.route("/me", me);
 app.route("/", filesRouter);
 app.route("/", platforms);
+// Onboarding BEFORE the routers below: campaignsRouter/aiRouter/billingRouter
+// use bare `use()` (no path), which Hono merges as global middleware for all
+// subsequently-registered routes. Onboarding's /scrape endpoints are public,
+// so they must be registered before that leaked auth middleware exists.
+app.route("/", onboardingRouter);
 app.route("/", campaignsRouter);
 app.route("/", aiRouter);
 // Billing: the router's own middleware skips POST /billing/webhook
@@ -82,6 +92,12 @@ app.route("/", aiRouter);
 app.route("/", billingRouter);
 // Worker job history (admin UI polls these).
 app.route("/", jobsRouter);
+// Phase 8: notifications, scheduling, agency, super-admin.
+// Each router applies its own auth guards (super-admin requires platformAdmin).
+app.route("/", notificationsRouter);
+app.route("/", schedulingRouter);
+app.route("/", agencyRouter);
+app.route("/", superAdminRouter);
 
 app.onError((err, c) => {
   if (err instanceof HttpError) {

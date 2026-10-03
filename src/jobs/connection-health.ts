@@ -58,6 +58,7 @@ export async function runConnectionHealth(ctx: JobCtx): Promise<Record<string, a
             .limit(20);
           const days = Math.max(0, Math.round(msLeft / 864e5));
           await queueNotification(
+            db,
             owners.map((o) => o.memberId).filter(Boolean) as string[],
             {
               eventType: `platform.token.${status}`,
