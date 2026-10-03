@@ -1,7 +1,8 @@
 // PBKDF2-HMAC-SHA256 password hashing via WebCrypto (no Node-only deps).
 // Stored format: pbkdf2$<iterations>$<salt-b64>$<hash-b64>
 
-const ITERATIONS = 210_000;
+// Workers' WebCrypto caps PBKDF2 at 100,000 iterations — 210k (OWASP) throws.
+const ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const HASH_BYTES = 32;
 
