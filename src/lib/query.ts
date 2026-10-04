@@ -3,7 +3,14 @@ import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { HttpError } from "./filter.js";
 
 export type AggregateOp = "sum" | "avg" | "min" | "max" | "count";
-export type AggregateSpec = Partial<Record<AggregateOp, string[]>>;
+export interface AggregateItem {
+  /** Result key the frontend reads (its alias). */
+  alias: string;
+  op: AggregateOp;
+  /** Null for bare count(). */
+  field: string | null;
+}
+export type AggregateSpec = AggregateItem[];
 
 export interface SortSpec {
   field: string;
@@ -57,6 +64,17 @@ function parseSort(raw: string | null, table: SQLiteTable): SortSpec[] {
   const parsed = parseJson(raw, "sort");
   if (parsed === undefined) return [];
   if (!Array.isArray(parsed)) {
+    // The frontend also sends sort as an object map: { createdAt: "desc" }.
+    if (typeof parsed === "object" && parsed !== null) {
+      return Object.entries(parsed).map(([field, dir]) => {
+        assertField(table, field, "sort");
+        const d = String(dir ?? "").toLowerCase();
+        if (d !== "asc" && d !== "desc") {
+          throw new HttpError(400, `Invalid sort order "${String(dir)}" for field "${field}"`, "INVALID_QUERY");
+        }
+        return { field, dir: d as "asc" | "desc" };
+      });
+    }
     throw new HttpError(400, `Query param "sort" must be a JSON array`, "INVALID_QUERY");
   }
   return parsed.map((item): SortSpec => {
@@ -127,16 +145,39 @@ function parseAggregate(raw: string | null, table: SQLiteTable): AggregateSpec |
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new HttpError(400, `Query param "aggregate" must be a JSON object`, "INVALID_QUERY");
   }
-  const spec: AggregateSpec = {};
-  for (const [op, value] of Object.entries(parsed)) {
-    if (!AGGREGATE_OPS.includes(op)) {
-      throw new HttpError(400, `Unknown aggregate "${op}"`, "INVALID_QUERY");
+  const spec: AggregateSpec = [];
+  const pushItem = (alias: string, op: string, field: unknown) => {
+    if (!AGGREGATE_OPS.includes(op as AggregateOp)) {
+      throw new HttpError(400, `Unknown aggregate function "${op}"`, "INVALID_QUERY");
     }
-    if (!Array.isArray(value) || !value.every((f): f is string => typeof f === "string")) {
-      throw new HttpError(400, `Aggregate "${op}" must be an array of field names`, "INVALID_QUERY");
+    if (field !== undefined && field !== null) {
+      if (typeof field !== "string" || field === "") {
+        throw new HttpError(400, `Aggregate "${alias}" needs a field name`, "INVALID_QUERY");
+      }
+      assertField(table, field, "aggregate");
+    } else if (op !== "count") {
+      throw new HttpError(400, `Aggregate "${alias}" needs a field name`, "INVALID_QUERY");
     }
-    for (const f of value) assertField(table, f, "aggregate");
-    spec[op as AggregateOp] = [...value];
+    spec.push({ alias, op: op as AggregateOp, field: typeof field === "string" ? field : null });
+  };
+  for (const [key, value] of Object.entries(parsed)) {
+    if (Array.isArray(value)) {
+      // Legacy shape: { sum: ["spend", "revenue"] } — alias is op_field.
+      for (const f of value) {
+        if (typeof f !== "string") {
+          throw new HttpError(400, `Aggregate "${key}" must be an array of field names`, "INVALID_QUERY");
+        }
+        pushItem(`${key}_${f}`, key, f);
+      }
+      continue;
+    }
+    if (typeof value === "object" && value !== null) {
+      // Frontend shape: { alias: { function: "sum", field: "spend" } }.
+      const rec = value as Record<string, unknown>;
+      pushItem(key, String(rec["function"] ?? ""), rec["field"] ?? null);
+      continue;
+    }
+    throw new HttpError(400, `Aggregate "${key}" must be an array or { function, field }`, "INVALID_QUERY");
   }
   return spec;
 }
