@@ -35,16 +35,31 @@ const abs = (v: string | undefined | null, base: string): string => {
   }
 };
 
-async function fetchText(url: string, { timeoutMs = 15000, maxBytes = 1_500_000 } = {}): Promise<string> {
-  const r = await fetch(url, {
-    headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,text/css;q=0.9,*/*;q=0.8" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!r.ok) throw new Error(`Failed to fetch website content: ${r.status} ${r.statusText}`);
-  const ab = await r.arrayBuffer();
-  const slice = ab.byteLength > maxBytes ? ab.slice(0, maxBytes) : ab;
-  return new TextDecoder("utf-8").decode(slice);
+async function fetchText(url: string, { timeoutMs = 15000, maxBytes = 1_500_000, retries = 3 } = {}): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url, {
+      headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,text/css;q=0.9,*/*;q=0.8" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (r.ok) {
+      const ab = await r.arrayBuffer();
+      const slice = ab.byteLength > maxBytes ? ab.slice(0, maxBytes) : ab;
+      return new TextDecoder("utf-8").decode(slice);
+    }
+    // The site is rate-limiting us (or briefly erroring) — back off and retry
+    // instead of failing the whole scrape on a transient 429/503.
+    if ((r.status === 429 || r.status === 502 || r.status === 503) && attempt < retries) {
+      const retryAfter = Number(r.headers.get("retry-after"));
+      const waitMs =
+        Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 15000)
+          : Math.min(1000 * 2 ** attempt, 8000);
+      await new Promise((res) => setTimeout(res, waitMs));
+      continue;
+    }
+    throw new Error(`Failed to fetch website content: ${r.status} ${r.statusText}`);
+  }
 }
 
 /* ---------- lightweight HTML parsing (no DOM on Workers) ---------- */
