@@ -45,6 +45,8 @@ export function parseFields(raw: string | null, table: SQLiteTable): string[] | 
     throw new HttpError(400, `Query param "fields" must be a JSON array of strings`, "INVALID_QUERY");
   }
   const fields = [...new Set<string>(parsed)];
+  // "*" means "all fields" (the legacy frontend sends fields=["*"]).
+  if (fields.includes("*")) return undefined;
   for (const f of fields) assertField(table, f, "fields");
   // The id is always selected so rows stay addressable.
   if (Object.hasOwn(getTableColumns(table), "id") && !fields.includes("id")) fields.unshift("id");
