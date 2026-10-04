@@ -154,12 +154,14 @@ export function googleAdsVersion(cfg?: PlatformCfg | null): string {
 
 /* ---------------- Google Ads ---------------- */
 const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
+/** Google Ads API OAuth scope — required by Google; the request is rejected without it. */
+const GOOGLE_ADS_SCOPES = ["https://www.googleapis.com/auth/adwords"];
 const google: Provider = {
   authUrl: (cfg, redirectUri, state) =>
     `${cfg.authorizeUrl || "https://accounts.google.com/o/oauth2/v2/auth"}?${form({
       client_id: cfg.clientId,
       redirect_uri: redirectUri,
-      scope: (cfg.scopes || []).join(" "),
+      scope: (cfg.scopes?.length ? cfg.scopes : GOOGLE_ADS_SCOPES).join(" "),
       response_type: "code",
       state,
       access_type: "offline",
