@@ -536,9 +536,11 @@ auth.get("/signin/:provider/callback", async (c) => {
     given_name?: string;
     family_name?: string;
     name?: string;
+    picture?: string;
   };
   const email = (profile.email ?? "").toLowerCase().trim();
   if (!email) return fail("oauth_failed");
+  const avatarUrl = typeof profile.picture === "string" && profile.picture ? profile.picture : null;
 
   const db = getDb(c.env.DB);
   let user = await db.query.users.findFirst({
@@ -552,6 +554,7 @@ auth.get("/signin/:provider/callback", async (c) => {
         email,
         firstName: profile.given_name ?? null,
         lastName: profile.family_name ?? null,
+        avatarUrl,
         emailVerified: true,
       })
       .returning();
@@ -563,6 +566,11 @@ auth.get("/signin/:provider/callback", async (c) => {
     }));
   }
   if (!tenantId) return fail("no_tenant");
+  // Refresh the avatar on every Google sign-in (covers existing users).
+  if (avatarUrl && user.avatarUrl !== avatarUrl) {
+    await db.update(users).set({ avatarUrl, updatedAt: new Date() }).where(eq(users.id, user.id));
+    user = { ...user, avatarUrl };
+  }
   const token = await mint(c.env, user, tenantId, "access");
   return c.redirect(`${redirectUrl}?token=${token}`, 302);
 });
