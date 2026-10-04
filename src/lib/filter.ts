@@ -32,7 +32,7 @@ export class HttpError extends Error {
 
 type Operator = "eq" | "ne" | "in" | "nin" | "gt" | "gte" | "lt" | "lte" | "icontains" | "arraycontains" | "jsonbContains";
 
-const OPERATORS: readonly Operator[] = ["eq", "ne", "icontains", "arraycontains", "jsonbContains"];
+const OPERATORS: readonly Operator[] = ["eq", "ne", "in", "nin", "gt", "gte", "lt", "lte", "icontains", "arraycontains", "jsonbContains"];
 
 function isOperator(op: string): op is Operator {
   return (OPERATORS as readonly string[]).includes(op);

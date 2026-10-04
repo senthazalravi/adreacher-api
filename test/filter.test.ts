@@ -77,6 +77,22 @@ describe("compileFilter operators", () => {
     expect(paramsOf({ name: { icontains: "A%b_c\\d" } })).toEqual(["%a\\%b\\_c\\\\d%"]);
   });
 
+  it("in / nin compile to IN / NOT IN lists", () => {
+    const sqlIn = sqlOf({ name: { in: ["a", "b"] } });
+    expect(sqlIn.toLowerCase()).toContain(" in ");
+    expect(paramsOf({ name: { in: ["a", "b"] } })).toEqual(["a", "b"]);
+    const sqlNin = sqlOf({ name: { nin: ["a", "b"] } });
+    expect(sqlNin.toLowerCase()).toContain("not in");
+    expect(paramsOf({ name: { nin: ["a", "b"] } })).toEqual(["a", "b"]);
+  });
+
+  it("comparison operators gt/gte/lt/lte compile", () => {
+    expect(sqlOf({ id: { gt: 5 } })).toContain(">");
+    expect(sqlOf({ id: { gte: 5 } })).toContain(">=");
+    expect(sqlOf({ id: { lt: 5 } })).toContain("<");
+    expect(sqlOf({ id: { lte: 5 } })).toContain("<=");
+  });
+
   it("arraycontains uses json_each EXISTS", () => {
     const sql = sqlOf({ tags: { arraycontains: "x" } });
     expect(sql).toContain(`json_each("t"."tags")`);
