@@ -387,7 +387,8 @@ const meta: Provider = {
     `${cfg.authorizeUrl || "https://www.facebook.com/v21.0/dialog/oauth"}?${form({
       client_id: cfg.clientId,
       redirect_uri: redirectUri,
-      scope: (cfg.scopes || []).join(","),
+      // Meta ads integrations need these; without any scope the grant is useless for ads.
+      scope: (cfg.scopes?.length ? cfg.scopes : ["ads_read", "ads_management"]).join(","),
       response_type: "code",
       state,
     })}`,
