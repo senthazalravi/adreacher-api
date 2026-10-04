@@ -54,6 +54,24 @@ function paranoidGuard(table: SQLiteTable): SQL | undefined {
   return deletedAt ? isNull(deletedAt) : undefined;
 }
 
+/**
+ * The frontend sends dates as ISO strings, but timestamp columns
+ * (`integer(..., { mode: "timestamp" })`) need Date objects — Drizzle calls
+ * `.getTime()` on the value and throws "value.getTime is not a function" for
+ * strings. Coerce ISO strings to Dates for timestamp columns up front.
+ */
+function coerceTimestamps(table: SQLiteTable, values: Record<string, unknown>): void {
+  const cols = getTableColumns(table) as Record<string, AnySQLiteColumn & { mode?: string }>;
+  for (const [name, col] of Object.entries(cols)) {
+    if (col?.mode !== "timestamp") continue;
+    const v = values[name];
+    if (typeof v === "string" && v) {
+      const d = new Date(v);
+      if (!Number.isNaN(d.getTime())) values[name] = d;
+    }
+  }
+}
+
 function whereClause(table: SQLiteTable, filter: unknown): SQL | undefined {
   const parts = [compileFilter(filter, table), paranoidGuard(table)].filter(
     (p): p is SQL => p !== undefined,
@@ -131,6 +149,7 @@ async function findOneScoped(
 async function insertRow(db: Db, table: SQLiteTable, input: Record<string, unknown>): Promise<Row> {
   const cols = getTableColumns(table);
   const values: Record<string, unknown> = { ...input };
+  coerceTimestamps(table, values);
   if (cols["id"] && values["id"] === undefined) values["id"] = crypto.randomUUID();
   const now = new Date();
   if (cols["createdAt"] && values["createdAt"] === undefined) values["createdAt"] = now;
@@ -161,6 +180,7 @@ async function updateRow(
 ): Promise<Row> {
   const values: Record<string, unknown> = { ...data };
   delete values["id"];
+  coerceTimestamps(table, values);
   if (getTableColumns(table)["updatedAt"]) values["updatedAt"] = new Date();
   await db
     .update(table)
