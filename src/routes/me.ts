@@ -205,6 +205,7 @@ me.get("/context", async (c) => {
         firstName: user.firstName ?? null,
         lastName: user.lastName ?? null,
         avatar_Id: null,
+        avatarUrl: user.avatarUrl ?? null,
       },
       role,
       tenant_Id: tenant?.id ?? null,
