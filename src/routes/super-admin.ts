@@ -285,12 +285,28 @@ router.get("/super-admin/tenants", async (c) => {
         });
         if (p) plan = { slug: p.slug, name: p.name };
       }
+      // Fetch workspaces for this tenant (frontend expects array)
+      const wsRows = await db
+        .select({ id: workspaces.id, name: workspaces.name, onboardingState: workspaces.onboardingState })
+        .from(workspaces)
+        .where(and(eq(workspaces.account_id, t.id), isNull(workspaces.deletedAt)));
+      // Count members across workspaces
+      const wsIds = wsRows.map((w) => w.id);
+      let memberCount = 0;
+      if (wsIds.length > 0) {
+        const mc = await db
+          .select({ n: count() })
+          .from(workspaceMembers)
+          .where(inArray(workspaceMembers.workspaceId, wsIds));
+        memberCount = mc[0]?.n ?? 0;
+      }
       return {
         id: t.id,
         name: t.name,
         slug: t.slug,
         type: t.type,
         status: t.status,
+        tenant_Id: t.id,
         planSlug: t.planSlug,
         billingEmail: t.billingEmail,
         contactPerson: t.contactPerson,
@@ -300,6 +316,9 @@ router.get("/super-admin/tenants", async (c) => {
           ? { id: owner.id, email: owner.email, firstName: owner.firstName, lastName: owner.lastName }
           : null,
         workspaceCount: wsCount[0]?.n ?? 0,
+        workspaces: wsRows.map((w) => ({ id: w.id, name: w.name, onboardingState: w.onboardingState ?? 'pending' })),
+        memberCount,
+        features: {},
         subscription: sub
           ? {
               id: sub.id,
