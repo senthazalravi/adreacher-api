@@ -474,11 +474,31 @@ async function verifyState(raw: string, secret: string): Promise<Record<string, 
 auth.get("/signin/:provider", async (c) => {
   const provider = c.req.param("provider");
   const redirectUrl = c.req.query("redirect_url") ?? `${appUrl(c.env)}/auth/callback`;
-  if (provider !== "google") {
+  if (provider !== "google" && provider !== "facebook") {
     return c.json(
       { error: { code: "OAUTH_NOT_CONFIGURED", message: `Sign-in with ${provider} is not enabled` } },
       501,
     );
+  }
+  const state = await signState({ provider, redirect_url: redirectUrl }, getJwtSecret(c.env));
+  if (provider === "facebook") {
+    const clientId = c.env.FACEBOOK_CLIENT_ID;
+    if (!clientId) {
+      return c.json(
+        { error: { code: "OAUTH_NOT_CONFIGURED", message: "Facebook sign-in is not configured" } },
+        501,
+      );
+    }
+    const url =
+      "https://www.facebook.com/v18.0/dialog/oauth?" +
+      new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: `${apiPublicUrl(c.env)}/auth/signin/facebook/callback`,
+        response_type: "code",
+        scope: "email,public_profile",
+        state,
+      }).toString();
+    return c.redirect(url, 302);
   }
   const clientId = c.env.GOOGLE_CLIENT_ID;
   if (!clientId) {
@@ -487,7 +507,6 @@ auth.get("/signin/:provider", async (c) => {
       501,
     );
   }
-  const state = await signState({ provider, redirect_url: redirectUrl }, getJwtSecret(c.env));
   const url =
     "https://accounts.google.com/o/oauth2/v2/auth?" +
     new URLSearchParams({
@@ -509,38 +528,81 @@ auth.get("/signin/:provider/callback", async (c) => {
   const state = await verifyState(stateRaw, getJwtSecret(c.env)).catch(() => null);
   const redirectUrl = (state?.["redirect_url"] as string) ?? `${appUrl(c.env)}/auth/callback`;
   const fail = (msg: string) => c.redirect(`${redirectUrl}?error=${encodeURIComponent(msg)}`, 302);
-  if (provider !== "google" || !code || !state) return fail("oauth_failed");
+  if ((provider !== "google" && provider !== "facebook") || !code || !state) return fail("oauth_failed");
 
-  const clientId = c.env.GOOGLE_CLIENT_ID!;
-  const clientSecret = c.env.GOOGLE_CLIENT_SECRET!;
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: `${apiPublicUrl(c.env)}/auth/signin/google/callback`,
-      grant_type: "authorization_code",
-    }).toString(),
-  });
-  if (!tokenRes.ok) return fail("oauth_failed");
-  const tokens = (await tokenRes.json()) as { access_token?: string };
-  if (!tokens.access_token) return fail("oauth_failed");
-  const meRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-    headers: { Authorization: `Bearer ${tokens.access_token}` },
-  });
-  if (!meRes.ok) return fail("oauth_failed");
-  const profile = (await meRes.json()) as {
-    email?: string;
-    given_name?: string;
-    family_name?: string;
-    name?: string;
-    picture?: string;
-  };
-  const email = (profile.email ?? "").toLowerCase().trim();
-  if (!email) return fail("oauth_failed");
-  const avatarUrl = typeof profile.picture === "string" && profile.picture ? profile.picture : null;
+  let email = "";
+  let firstName: string | null = null;
+  let lastName: string | null = null;
+  let displayName: string | null = null;
+  let avatarUrl: string | null = null;
+
+  if (provider === "facebook") {
+    const clientId = c.env.FACEBOOK_CLIENT_ID!;
+    const clientSecret = c.env.FACEBOOK_CLIENT_SECRET!;
+    const tokenRes = await fetch(
+      "https://graph.facebook.com/v18.0/oauth/access_token?" +
+        new URLSearchParams({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: `${apiPublicUrl(c.env)}/auth/signin/facebook/callback`,
+        }).toString()
+    );
+    if (!tokenRes.ok) return fail("oauth_failed");
+    const tokens = (await tokenRes.json()) as { access_token?: string };
+    if (!tokens.access_token) return fail("oauth_failed");
+    const meRes = await fetch(
+      `https://graph.facebook.com/v18.0/me?fields=id,name,email,first_name,last_name,picture.type(large)&access_token=${tokens.access_token}`
+    );
+    if (!meRes.ok) return fail("oauth_failed");
+    const profile = (await meRes.json()) as {
+      email?: string;
+      first_name?: string;
+      last_name?: string;
+      name?: string;
+      picture?: { data?: { url?: string } };
+    };
+    email = (profile.email ?? "").toLowerCase().trim();
+    if (!email) return fail("oauth_failed");
+    firstName = profile.first_name ?? null;
+    lastName = profile.last_name ?? null;
+    displayName = profile.name ?? null;
+    avatarUrl = profile.picture?.data?.url ?? null;
+  } else {
+    const clientId = c.env.GOOGLE_CLIENT_ID!;
+    const clientSecret = c.env.GOOGLE_CLIENT_SECRET!;
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: `${apiPublicUrl(c.env)}/auth/signin/google/callback`,
+        grant_type: "authorization_code",
+      }).toString(),
+    });
+    if (!tokenRes.ok) return fail("oauth_failed");
+    const tokens = (await tokenRes.json()) as { access_token?: string };
+    if (!tokens.access_token) return fail("oauth_failed");
+    const meRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+    if (!meRes.ok) return fail("oauth_failed");
+    const profile = (await meRes.json()) as {
+      email?: string;
+      given_name?: string;
+      family_name?: string;
+      name?: string;
+      picture?: string;
+    };
+    email = (profile.email ?? "").toLowerCase().trim();
+    if (!email) return fail("oauth_failed");
+    firstName = profile.given_name ?? null;
+    lastName = profile.family_name ?? null;
+    displayName = profile.name ?? null;
+    avatarUrl = typeof profile.picture === "string" && profile.picture ? profile.picture : null;
+  }
 
   const db = getDb(c.env.DB);
   let user = await db.query.users.findFirst({
@@ -552,8 +614,8 @@ auth.get("/signin/:provider/callback", async (c) => {
       .insert(users)
       .values({
         email,
-        firstName: profile.given_name ?? null,
-        lastName: profile.family_name ?? null,
+        firstName,
+        lastName,
         avatarUrl,
         emailVerified: true,
       })
@@ -561,7 +623,7 @@ auth.get("/signin/:provider/callback", async (c) => {
     if (!created) return fail("no_user");
     user = created;
     ({ tenantId } = await bootstrapAccount(db, {
-      account: { name: profile.name || email.split("@")[0] },
+      account: { name: displayName || email.split("@")[0] },
       ownerUserId: user.id,
     }));
   }
