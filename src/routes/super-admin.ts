@@ -297,7 +297,7 @@ router.get("/super-admin/tenants", async (c) => {
         const mc = await db
           .select({ n: count() })
           .from(workspaceMembers)
-          .where(inArray(workspaceMembers.workspaceId, wsIds));
+          .where(inArray(workspaceMembers.workspace_id, wsIds));
         memberCount = mc[0]?.n ?? 0;
       }
       return {
