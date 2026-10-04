@@ -2,9 +2,15 @@ import {
   and,
   eq,
   getTableColumns,
+  gt,
+  gte,
+  inArray,
   isNotNull,
   isNull,
+  lt,
+  lte,
   ne,
+  notInArray,
   or,
   sql,
   type SQL,
@@ -24,7 +30,7 @@ export class HttpError extends Error {
   }
 }
 
-type Operator = "eq" | "ne" | "icontains" | "arraycontains" | "jsonbContains";
+type Operator = "eq" | "ne" | "in" | "nin" | "gt" | "gte" | "lt" | "lte" | "icontains" | "arraycontains" | "jsonbContains";
 
 const OPERATORS: readonly Operator[] = ["eq", "ne", "icontains", "arraycontains", "jsonbContains"];
 
@@ -49,6 +55,22 @@ function compileOperator(column: AnySQLiteColumn, field: string, op: string, val
       return value === null || value === undefined ? isNull(column) : eq(column, value);
     case "ne":
       return value === null || value === undefined ? isNotNull(column) : ne(column, value);
+    case "in":
+    case "nin": {
+      if (!Array.isArray(value)) {
+        throw new HttpError(400, `Operator "${op}" on field "${field}" requires an array value`, "INVALID_FILTER");
+      }
+      if (value.length === 0) return sql`1 = ${op === "in" ? 0 : 1}`;
+      return (op === "in" ? inArray(column, value) : notInArray(column, value)) as SQL;
+    }
+    case "gt":
+      return gt(column, value as string | number);
+    case "gte":
+      return gte(column, value as string | number);
+    case "lt":
+      return lt(column, value as string | number);
+    case "lte":
+      return lte(column, value as string | number);
     case "icontains": {
       if (typeof value !== "string") {
         throw new HttpError(
