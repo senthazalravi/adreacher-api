@@ -209,9 +209,23 @@ describe("parseListQuery", () => {
 
   it("aggregate is parsed and validated", () => {
     const q = parseListQuery(sp('aggregate={"sum":["deletedAt"],"count":["id"]}'), t);
-    expect(q.aggregate).toEqual({ sum: ["deletedAt"], count: ["id"] });
+    expect(q.aggregate).toEqual([
+      { alias: "sum_deletedAt", op: "sum", field: "deletedAt" },
+      { alias: "count_id", op: "count", field: "id" },
+    ]);
+    const q2 = parseListQuery(sp('aggregate={"spend":{"function":"sum","field":"deletedAt"}}'), t);
+    expect(q2.aggregate).toEqual([{ alias: "spend", op: "sum", field: "deletedAt" }]);
     expectHttpError400(() => parseListQuery(sp('aggregate={"bogus":["id"]}'), t));
     expectHttpError400(() => parseListQuery(sp('aggregate={"sum":["nope"]}'), t));
+    expectHttpError400(() => parseListQuery(sp('aggregate={"x":{"function":"bogus"}}'), t));
+  });
+
+  it("sort accepts an object map", () => {
+    const q = parseListQuery(sp('sort={"deletedAt":"desc","name":"asc"}'), t);
+    expect(q.sort).toEqual([
+      { field: "deletedAt", dir: "desc" },
+      { field: "name", dir: "asc" },
+    ]);
   });
 
   it("filter passes through as parsed JSON", () => {
