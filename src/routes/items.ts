@@ -241,11 +241,10 @@ function aggregateSelection(
   aggregate: ListQuery["aggregate"],
 ): Record<string, SQL> {
   const selection: Record<string, SQL> = {};
-  for (const [op, fields] of Object.entries(aggregate ?? {})) {
-    const fn = AGG_FNS[op as AggregateOp];
-    for (const field of fields ?? []) {
-      selection[`${op}_${field}`] = fn(columnOf(table, field));
-    }
+  for (const item of aggregate ?? []) {
+    const fn = AGG_FNS[item.op];
+    // count() with no field counts rows; other ops need their column.
+    selection[item.alias] = item.field ? fn(columnOf(table, item.field)) : count();
   }
   return selection;
 }
