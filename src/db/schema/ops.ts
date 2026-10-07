@@ -50,6 +50,7 @@ export const subscriptionPlans = sqliteTable(
     currency: text("currency").notNull().default("SEK"),
     billingInterval: text("billingInterval", { enum: ["month", "year"] }).notNull().default("month"),
     trialDays: integer("trialDays").notNull().default(14),
+    isPublic: integer("isPublic", { mode: "boolean" }).notNull().default(true),
     stripeProductId: text("stripeProductId"),
     stripePriceId: text("stripePriceId"),
     stripeProductIdLive: text("stripeProductIdLive"),
