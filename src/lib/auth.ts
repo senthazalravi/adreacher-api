@@ -218,6 +218,17 @@ export async function scopeItemsWhere(
     const idCol = cols["id"];
     return idCol ? eq(idCol, s.tenantId) : undefined;
   }
+  if (tableName === "campaign_templates") {
+    // The shared template gallery (isGallery) is readable by every workspace,
+    // alongside the caller's own templates — the frontend's library query
+    // relies on this; without it gallery rows only reach their owner tenant.
+    const wsCol2 = cols["workspace_id"];
+    const galCol = cols["isGallery"];
+    if (wsCol2 && galCol) {
+      const allowed = await allowedWorkspaceIds(db, s);
+      return or(inArray(wsCol2, allowed ?? []), eq(galCol, true)) as SQL;
+    }
+  }
   if (tableName === "agency_clients") {
     const agencyCol = cols["agency_id"];
     const clientCol = cols["client_id"];
