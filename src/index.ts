@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import items from "./routes/items.js";
 import filesRouter from "./routes/files.js";
@@ -52,6 +53,28 @@ export type Env = {
 };
 
 const app = new Hono<{ Bindings: Env }>();
+
+// CORS — MUST run before the auth guards below: browsers send a preflight
+// OPTIONS (no Authorization header) before every authenticated cross-origin
+// call, and if that hits authMiddleware it 401s and the browser blocks the
+// real request ("Network error" in the app). Only the app's own origins (and
+// local dev) are allowed; the API is Bearer-based, so no credentials mode.
+const ALLOWED_ORIGINS = new Set(["https://adreacher.app", "https://www.adreacher.app"]);
+app.use(
+  "*",
+  cors({
+    origin: (origin) => {
+      if (!origin) return null;
+      if (ALLOWED_ORIGINS.has(origin)) return origin;
+      if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return origin;
+      return null;
+    },
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Authorization", "Content-Type", "X-Requested-With"],
+    exposeHeaders: ["Content-Length", "Retry-After"],
+    maxAge: 86400,
+  }),
+);
 
 // Baseline security headers on every API response (errors and 404s included).
 app.use("*", async (c, next) => {
