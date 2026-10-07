@@ -46,6 +46,19 @@ function resolveColumn(table: SQLiteTable, field: string): AnySQLiteColumn {
   return col;
 }
 
+
+function isTimestampColumn(column: AnySQLiteColumn): boolean {
+  const c = column as unknown as { columnType?: string; dataType?: string };
+  return (c.columnType?.includes("Timestamp") ?? false) || c.dataType === "date";
+}
+
+function coerceValue(column: AnySQLiteColumn, value: unknown): unknown {
+  if (typeof value !== "string" || !isTimestampColumn(column)) return value;
+  const t = Date.parse(value);
+  if (Number.isNaN(t)) return value;
+  return Math.floor(t / 1000);
+}
+
 function compileOperator(column: AnySQLiteColumn, field: string, op: string, value: unknown): SQL {
   if (!isOperator(op)) {
     throw new HttpError(400, `Unknown operator "${op}" on field "${field}"`, "UNKNOWN_OPERATOR");
@@ -73,13 +86,13 @@ function compileOperator(column: AnySQLiteColumn, field: string, op: string, val
       return eq(column, value as string | number);
     }
     case "gt":
-      return gt(column, value as string | number);
+      return gt(column, coerceValue(column, value) as string | number);
     case "gte":
-      return gte(column, value as string | number);
+      return gte(column, coerceValue(column, value) as string | number);
     case "lt":
-      return lt(column, value as string | number);
+      return lt(column, coerceValue(column, value) as string | number);
     case "lte":
-      return lte(column, value as string | number);
+      return lte(column, coerceValue(column, value) as string | number);
     case "icontains": {
       if (typeof value !== "string") {
         throw new HttpError(
