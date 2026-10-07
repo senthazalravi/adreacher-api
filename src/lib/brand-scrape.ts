@@ -492,6 +492,13 @@ function heuristic(c: ScrapeContext): Record<string, any> {
 const nonEmptyStrings = (o: Record<string, unknown> | undefined): Record<string, string> =>
   Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => typeof v === "string" && v.trim() !== "")) as Record<string, string>;
 
+/** First real family name from a CSS stack; "" for generic/system stacks. */
+function cleanFont(v: string): string {
+  const first = String(v || "").split(",")[0]!.replace(/['"]/g, "").trim();
+  if (!first || /^(-|system|sans-serif|serif$|monospace|cursive$|fantasy)/i.test(first)) return "";
+  return first;
+}
+
 function normalize(r: Record<string, any>, c: ScrapeContext): Record<string, any> {
   const h = heuristic(c);
   const b = r.business || {};
@@ -504,7 +511,10 @@ function normalize(r: Record<string, any>, c: ScrapeContext): Record<string, any
       logoUrl: br.logoUrl || h.branding.logoUrl,
       faviconUrl: br.faviconUrl || h.branding.faviconUrl,
       colors: { ...h.branding.colors, ...nonEmptyStrings(br.colors) },
-      fonts: { ...h.branding.fonts, ...nonEmptyStrings(br.fonts) },
+      fonts: {
+        heading: cleanFont(br.fonts?.heading ?? "") || h.branding.fonts.heading,
+        body: cleanFont(br.fonts?.body ?? "") || h.branding.fonts.body,
+      },
       brandThemes: Array.isArray(br.brandThemes) && br.brandThemes.length ? br.brandThemes.slice(0, 5) : h.branding.brandThemes,
       themeMode: br.themeMode === "dark" || br.themeMode === "light" ? br.themeMode : h.branding.themeMode,
       socialLinks: { ...h.branding.socialLinks, ...(br.socialLinks || {}) },
