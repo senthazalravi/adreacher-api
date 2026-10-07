@@ -127,6 +127,20 @@ function appUrl(env: Env): string {
   return (env.APP_URL || "https://adreacher.app").replace(/\/+$/, "");
 }
 
+/** Only allow token-handoff redirect targets on the app origin. */
+function safeRedirect(c: AppContext, raw: unknown, fallbackPath = "/auth/callback"): string {
+  const base = appUrl(c.env);
+  if (typeof raw === "string" && raw) {
+    try {
+      const u = new URL(raw, base);
+      if (u.origin === new URL(base).origin) return u.toString();
+    } catch {
+      /* fall through to the app default */
+    }
+  }
+  return `${base}${fallbackPath}`;
+}
+
 function apiPublicUrl(env: Env): string {
   return (env.API_PUBLIC_URL || "http://localhost:8787").replace(/\/+$/, "");
 }
@@ -287,7 +301,7 @@ auth.post("/switch-tenant", authMiddleware, async (c) => {
 auth.post("/magiclink", async (c) => {
   const body = await readJson(c);
   const email = String(body["email"] ?? "").toLowerCase().trim();
-  const link = String(body["link"] ?? appUrl(c.env));
+  const link = safeRedirect(c, body["link"], "");
   const db = getDb(c.env.DB);
   // Always respond OK (no account enumeration).
   const user = await db.query.users.findFirst({
@@ -319,7 +333,7 @@ auth.post("/magiclink", async (c) => {
 
 auth.get("/magiclink/verify", async (c) => {
   const raw = c.req.query("token") ?? "";
-  const redirect = c.req.query("redirect") ?? appUrl(c.env);
+  const redirect = safeRedirect(c, c.req.query("redirect"), "");
   const db = getDb(c.env.DB);
   let row;
   try {
@@ -504,7 +518,7 @@ async function verifyState(raw: string, secret: string): Promise<Record<string, 
 
 auth.get("/signin/:provider", async (c) => {
   const provider = c.req.param("provider");
-  const redirectUrl = c.req.query("redirect_url") ?? `${appUrl(c.env)}/auth/callback`;
+  const redirectUrl = safeRedirect(c, c.req.query("redirect_url"));
   if (provider !== "google" && provider !== "facebook") {
     return c.json(
       { error: { code: "OAUTH_NOT_CONFIGURED", message: `Sign-in with ${provider} is not enabled` } },
@@ -557,7 +571,7 @@ auth.get("/signin/:provider/callback", async (c) => {
   const code = c.req.query("code") ?? "";
   const stateRaw = c.req.query("state") ?? "";
   const state = await verifyState(stateRaw, getJwtSecret(c.env)).catch(() => null);
-  const redirectUrl = (state?.["redirect_url"] as string) ?? `${appUrl(c.env)}/auth/callback`;
+  const redirectUrl = safeRedirect(c, state?.["redirect_url"]);
   const fail = (msg: string) => c.redirect(`${redirectUrl}?error=${encodeURIComponent(msg)}`, 302);
   if ((provider !== "google" && provider !== "facebook") || !code || !state) return fail("oauth_failed");
 
@@ -685,9 +699,12 @@ auth.post("/2fa/verify", async (c) => {
   }
   const db = getDb(c.env.DB);
   const user = await db.query.users.findFirst({ where: eq(users.id, payload.sub) });
+  const twoFaRetry = await rateLimitHit(db, `2fa:user:${payload.sub}`, 5, 15 * 60);
+  if (twoFaRetry > 0) return rateLimited(c, twoFaRetry);
   if (!user?.totpSecret || !(await verifyTotp(user.totpSecret, String(body["code"] ?? "")))) {
     return c.json({ error: { code: "INVALID_CODE", message: "Invalid verification code" } }, 401);
   }
+  await rateLimitClear(db, `2fa:user:${payload.sub}`);
   const token = await mint(c.env, user, payload.tenantId, "access");
   const refreshToken = await mint(c.env, user, payload.tenantId, "refresh");
   return c.json({ data: { token, refreshToken, user: sanitizeUser(user as unknown as Record<string, unknown>) } });
@@ -695,12 +712,21 @@ auth.post("/2fa/verify", async (c) => {
 
 auth.post("/2fa/enable", authMiddleware, async (c) => {
   const s = c.get("session");
+  const body = await readJson(c).catch(() => ({}) as Record<string, unknown>);
   const db = getDb(c.env.DB);
+  const user = await db.query.users.findFirst({ where: eq(users.id, s.userId) });
+  // Rotating the TOTP secret requires proving account ownership first
+  // (password, plus the current code when 2FA is already on).
+  if (!user?.passwordHash || !(await verifyPassword(String(body["currentPassword"] ?? ""), user.passwordHash))) {
+    return c.json({ error: { code: "INVALID_CREDENTIALS", message: "Current password is required to change 2FA" } }, 401);
+  }
+  if (user.twoFactorEnabled && (!user.totpSecret || !(await verifyTotp(user.totpSecret, String(body["code"] ?? ""))))) {
+    return c.json({ error: { code: "INVALID_CODE", message: "Current 2FA code is required to rotate the secret" } }, 401);
+  }
   const secret = generateTotpSecret();
   await db.update(users).set({ totpSecret: secret, updatedAt: new Date() }).where(eq(users.id, s.userId));
-  const user = await db.query.users.findFirst({ where: eq(users.id, s.userId) });
   return c.json({
-    data: { secret, otpauthUrl: totpUri(secret, user?.email ?? s.userId) },
+    data: { secret, otpauthUrl: totpUri(secret, user.email ?? s.userId) },
   });
 });
 

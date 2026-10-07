@@ -106,9 +106,55 @@ async function encryptWrite(
   return encryptRowSecrets(collection, values, key);
 }
 
-/** Mask secret fields on rows leaving the API. */
+/** Credential columns that are never returned through the generic CRUD. */
+const READ_STRIP_COLUMNS: Record<string, string[]> = {
+  users: ["passwordHash", "totpSecret"],
+};
+
+/** Collections only platform admins may write through the generic CRUD. */
+const ADMIN_ONLY_WRITE = new Set([
+  "users",
+  "user_tokens",
+  "billing_settings",
+  "ai_settings",
+  "subscription_plans",
+  "subscriptions",
+  "usage_counters",
+]);
+
+/** Columns non-admins may never set through the generic CRUD. */
+const WRITE_DENY_COLUMNS: Record<string, string[]> = {
+  tenants: ["ownerId", "status", "planSlug", "deletedAt"],
+  workspace_members: ["role", "member_id", "account_id", "status", "deletedAt"],
+};
+
+/** Mask secret fields (and strip credential columns) on rows leaving the API. */
 function maskRead(collection: string, row: Row): Row {
-  return maskRowSecrets(collection, row);
+  const masked = maskRowSecrets(collection, row);
+  const strip = READ_STRIP_COLUMNS[collection];
+  if (!strip) return masked;
+  const out = { ...masked };
+  for (const f of strip) delete out[f];
+  return out;
+}
+
+function guardCollectionWrite(c: AppContext, collection: string): void {
+  if (ADMIN_ONLY_WRITE.has(collection) && !sessionOf(c).platformAdmin) {
+    throw new HttpError(403, `Collection "${collection}" is managed elsewhere`, "FORBIDDEN_COLLECTION");
+  }
+}
+
+function stripDeniedColumns(
+  c: AppContext,
+  collection: string,
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  if (sessionOf(c).platformAdmin) return body;
+  const deny = WRITE_DENY_COLUMNS[collection];
+  if (!deny) return body;
+  const out = { ...body };
+  for (const f of deny) delete out[f];
+  return out;
 }
 
 async function findOne(
@@ -254,11 +300,12 @@ function aggregateSelection(
 items.post("/:collection/bulk", async (c) => {
   const collection = c.req.param("collection");
   const table = getTable(collection);
+  guardCollectionWrite(c, collection);
   const body = await readJsonArray(c);
   const db = drizzle(c.env.DB);
   const rows: Row[] = [];
   for (const item of body) {
-    const scoped = await enforceWriteScope(c, table, item);
+    const scoped = await enforceWriteScope(c, table, stripDeniedColumns(c, collection, item));
     rows.push(maskRead(collection, await insertRow(db, table, await encryptWrite(c, collection, scoped))));
   }
   return c.json({ data: rows });
@@ -276,6 +323,7 @@ items.patch("/:collection/bulk", async (c) => {
   if (typeof data !== "object" || data === null || Array.isArray(data)) {
     throw new HttpError(400, 'Body must be { ids: string[], data: object }', "INVALID_BODY");
   }
+  guardCollectionWrite(c, collection);
   const db = drizzle(c.env.DB);
   const rows: Row[] = [];
   for (const id of ids) {
@@ -283,7 +331,7 @@ items.patch("/:collection/bulk", async (c) => {
     if (!existing) {
       return c.json({ error: { code: "NOT_FOUND", message: `Row "${id}" not found` } }, 404);
     }
-    const scoped = await enforceWriteScope(c, table, data as Record<string, unknown>);
+    const scoped = await enforceWriteScope(c, table, stripDeniedColumns(c, collection, data as Record<string, unknown>));
     rows.push(maskRead(collection, await updateRow(db, table, id, await encryptWrite(c, collection, scoped))));
   }
   return c.json({ data: rows });
@@ -292,6 +340,7 @@ items.patch("/:collection/bulk", async (c) => {
 items.delete("/:collection/bulk", async (c) => {
   const collection = c.req.param("collection");
   const table = getTable(collection);
+  guardCollectionWrite(c, collection);
   const body = await readJsonObject(c);
   const ids = body["ids"];
   if (!Array.isArray(ids) || !ids.every((v): v is string => typeof v === "string")) {
@@ -368,7 +417,8 @@ items.get("/:collection/:id", async (c) => {
 items.post("/:collection", async (c) => {
   const collection = c.req.param("collection");
   const table = getTable(collection);
-  const scoped = await enforceWriteScope(c, table, await readJsonObject(c));
+  guardCollectionWrite(c, collection);
+  const scoped = await enforceWriteScope(c, table, stripDeniedColumns(c, collection, await readJsonObject(c)));
   // Workspace creation also bootstraps workspace_settings + an owner
   // membership, and enforces the plan's workspace limit (402 when reached).
   if (collection === "workspaces") {
@@ -392,9 +442,10 @@ items.patch("/:collection/:id", async (c) => {
   const table = getTable(collection);
   const db = drizzle(c.env.DB);
   const id = c.req.param("id");
+  guardCollectionWrite(c, collection);
   const existing = await findOneScoped(c, collection, table, id);
   if (!existing) return c.json({ error: { code: "NOT_FOUND" } }, 404);
-  const scoped = await enforceWriteScope(c, table, await readJsonObject(c));
+  const scoped = await enforceWriteScope(c, table, stripDeniedColumns(c, collection, await readJsonObject(c)));
   const row = await updateRow(db, table, id, await encryptWrite(c, collection, scoped));
   return c.json({ data: maskRead(collection, row) });
 });
@@ -402,6 +453,7 @@ items.patch("/:collection/:id", async (c) => {
 items.delete("/:collection/:id", async (c) => {
   const collection = c.req.param("collection");
   const table = getTable(collection);
+  guardCollectionWrite(c, collection);
   const db = drizzle(c.env.DB);
   const id = c.req.param("id");
   const existing = await findOneScoped(c, collection, table, id);

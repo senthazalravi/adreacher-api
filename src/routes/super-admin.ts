@@ -871,6 +871,7 @@ router.post("/super-admin/shadow/:userId", async (c) => {
   const token = await signJwt(
     { sub: target.id, tenantId: tenant_Id, type: "access", shadow: true, shadowedBy: s.userId },
     getJwtSecret(c.env),
+    { ttl: 60 * 60 },
   );
   await logAudit(db, {
     tenantId: s.tenantId,

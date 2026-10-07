@@ -17,12 +17,56 @@ export const STEPS = [
   { key: "draft", label: "Drafting your profile" },
 ];
 
+/** Parse an IPv4 host in dotted, integer (2130706433), hex (0x7f000001) or octal form. */
+function parseIpv4(h: string): number[] | null {
+  if (/^0x[0-9a-f]+$/i.test(h)) {
+    const n = parseInt(h, 16);
+    return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  }
+  if (/^\d+$/.test(h)) {
+    const n = Number(h);
+    if (n > 4294967295) return null;
+    return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  }
+  const parts = h.split(".");
+  if (parts.length !== 4) return null;
+  const nums = parts.map((p) => {
+    if (/^0x[0-9a-f]+$/i.test(p)) return parseInt(p, 16);
+    if (/^0\d+$/.test(p)) return parseInt(p, 8);
+    if (/^\d+$/.test(p)) return Number(p);
+    return NaN;
+  });
+  if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
+  return nums;
+}
+
+/** True for loopback/private/link-local hosts, whatever form they arrive in. */
+export function isBlockedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!h || h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
+  if (h.includes(":")) {
+    const first = parseInt(h.split(":")[0] || "0", 16);
+    if (Number.isNaN(first) || first === 0 || (first >= 0xfc00 && first <= 0xfdff) || (first >= 0xfe80 && first <= 0xfebf)) return true;
+    return false;
+  }
+  const ip = parseIpv4(h);
+  if (ip) {
+    const [a, b] = ip as [number, number];
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+  }
+  return false;
+}
+
 export function normalizeUrl(input: string): string {
   let u = String(input || "").trim();
   if (!u) throw new Error("URL required");
   if (!/^https?:\/\//i.test(u)) u = `https://${u}`;
   const parsed = new URL(u);
   if (!/\./.test(parsed.hostname)) throw new Error("That doesn't look like a website address");
+  if (isBlockedHost(parsed.hostname)) throw new Error("That address cannot be scraped");
   return parsed.toString();
 }
 
@@ -35,13 +79,32 @@ const abs = (v: string | undefined | null, base: string): string => {
   }
 };
 
-async function fetchText(url: string, { timeoutMs = 15000, maxBytes = 1_500_000, retries = 3 } = {}): Promise<string> {
-  for (let attempt = 0; ; attempt++) {
-    const r = await fetch(url, {
+/** Fetch with manual redirect handling — every hop is SSRF-re-validated. */
+async function fetchChecked(url: string, timeoutMs: number): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop < 5; hop++) {
+    const r = await fetch(current, {
       headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,text/css;q=0.9,*/*;q=0.8" },
-      redirect: "follow",
+      redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     });
+    if (r.status >= 300 && r.status < 400) {
+      const loc = r.headers.get("location");
+      if (!loc) return r;
+      const next = new URL(loc, current);
+      if (next.protocol !== "http:" && next.protocol !== "https:") throw new Error("Redirect to a non-http(s) URL");
+      if (isBlockedHost(next.hostname)) throw new Error("Redirect to a blocked address");
+      current = next.toString();
+      continue;
+    }
+    return r;
+  }
+  throw new Error("Too many redirects");
+}
+
+async function fetchText(url: string, { timeoutMs = 15000, maxBytes = 1_500_000, retries = 3 } = {}): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetchChecked(url, timeoutMs);
     if (r.ok) {
       const ab = await r.arrayBuffer();
       const slice = ab.byteLength > maxBytes ? ab.slice(0, maxBytes) : ab;

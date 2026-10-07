@@ -61,7 +61,7 @@ export async function authenticate(c: Context<{ Bindings: Env }>): Promise<Sessi
   } catch {
     throw new UnauthorizedError();
   }
-  if (!payload || payload.type === "2fa") throw new UnauthorizedError();
+  if (!payload || payload.type !== "access") throw new UnauthorizedError();
 
   const db = getDb(c.env.DB);
   const user = await db.query.users.findFirst({

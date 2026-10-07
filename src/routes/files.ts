@@ -27,6 +27,9 @@ filesRouter.post("/files", async (c) => {
   if (!(file instanceof File)) {
     throw new HttpError(400, 'Multipart field "file" is required', "FILE_REQUIRED");
   }
+  if (file.size > 25 * 1024 * 1024) {
+    throw new HttpError(413, "File is too large (25 MB max)", "FILE_TOO_LARGE");
+  }
   const titleRaw = form.get("title");
   const folderRaw = form.get("folder");
   const isPublicRaw = form.get("isPublic");
@@ -78,20 +81,29 @@ filesRouter.get("/assets/:fileId", async (c) => {
   if (!row) return c.json({ error: { code: "NOT_FOUND" } }, 404);
 
   // Public files serve to anyone (ad platforms fetch by URL); private files
-  // require a session.
+  // require a session from the owning tenant.
   if (!row.isPublic) {
+    let session;
     try {
-      await authenticate(c);
+      session = await authenticate(c);
     } catch {
       return c.json({ error: { code: "UNAUTHORIZED", message: "Authentication required" } }, 401);
+    }
+    if (!session.platformAdmin && row.tenantId !== session.tenantId) {
+      return c.json({ error: { code: "NOT_FOUND" } }, 404);
     }
   }
 
   const obj = await c.env.R2.get(row.r2Key);
   if (!obj) return c.json({ error: { code: "NOT_FOUND" } }, 404);
 
+  // Only safe media types are served inline from the API origin; anything
+  // scriptable (HTML, SVG, ...) is forced to a download instead.
+  const rawType = row.mimeType || obj.httpMetadata?.contentType || "application/octet-stream";
+  const safeInline = /^(image\/(?!svg\+xml)[a-z0-9.+-]+|video\/[a-z0-9.+-]+|audio\/[a-z0-9.+-]+|application\/pdf)$/i.test(rawType);
   const headers = new Headers();
-  headers.set("Content-Type", row.mimeType || obj.httpMetadata?.contentType || "application/octet-stream");
+  headers.set("Content-Type", safeInline ? rawType : "application/octet-stream");
+  if (!safeInline) headers.set("Content-Disposition", "attachment");
   if (typeof obj.size === "number") headers.set("Content-Length", String(obj.size));
   return new Response(obj.body, { headers });
 });
@@ -102,6 +114,11 @@ filesRouter.delete("/files/:fileId", async (c) => {
   const rows = await db.select().from(files).where(eq(files.id, fileId)).limit(1);
   const row = rows[0];
   if (!row) return c.json({ error: { code: "NOT_FOUND" } }, 404);
+
+  const actor = sessionOf(c);
+  if (!actor.platformAdmin && row.tenantId !== actor.tenantId) {
+    return c.json({ error: { code: "NOT_FOUND" } }, 404);
+  }
 
   await c.env.R2.delete(row.r2Key);
   await db.delete(files).where(eq(files.id, fileId));

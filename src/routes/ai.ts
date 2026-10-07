@@ -56,6 +56,7 @@ import {
 import {
   buildScrapeContext,
   extractBrand,
+  isBlockedHost,
   storeScrapedAssets,
   type ScrapeContext,
 } from "../lib/brand-scrape.js";
@@ -412,7 +413,7 @@ aiRouter.get("/scraper/proxy-image", async (c) => {
   } catch {
     throw new HttpError(400, "A valid http(s) url is required", "URL_REQUIRED");
   }
-  if (!/^https?:$/.test(u.protocol) || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0|\[::1\])/.test(u.hostname)) {
+  if (!/^https?:$/.test(u.protocol) || isBlockedHost(u.hostname)) {
     throw new HttpError(400, "URL not allowed", "URL_FORBIDDEN");
   }
   const r = await fetch(u, { headers: { "User-Agent": "Mozilla/5.0 (compatible; ReachBot/1.0)" }, signal: AbortSignal.timeout(20000) });

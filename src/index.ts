@@ -132,7 +132,7 @@ app.onError((err, c) => {
     {
       error: {
         code: "INTERNAL_ERROR",
-        message: err instanceof Error ? err.message : "Unknown error",
+        message: "Internal error",
       },
     },
     500,
