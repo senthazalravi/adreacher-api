@@ -25,6 +25,8 @@ export type Env = {
   SECRET_KEY?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  FACEBOOK_CLIENT_ID?: string;
+  FACEBOOK_CLIENT_SECRET?: string;
   RESEND_API_KEY?: string;
   EMAIL_FROM?: string;
   /** Public URL of this API worker (for OAuth redirect_uri). */
@@ -47,6 +49,16 @@ export type Env = {
 };
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Baseline security headers on every API response (errors and 404s included).
+app.use("*", async (c, next) => {
+  await next();
+  c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "no-referrer");
+  c.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+});
 
 app.get("/health", (c) => c.json({ data: { status: "ok" } }));
 

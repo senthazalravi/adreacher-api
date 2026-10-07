@@ -14,6 +14,7 @@ import { authMiddleware, getJwtSecret } from "../lib/auth.js";
 import { bootstrapAccount } from "../lib/bootstrap.js";
 import { sendMail, linkEmail } from "../lib/mail.js";
 import { HttpError } from "../lib/filter.js";
+import { rateLimitClear, rateLimitHit, rateLimitPeek } from "../lib/rate-limit.js";
 import { users, tenants, userTokens } from "../db/schema/identity.js";
 import { workspaceMembers } from "../db/schema/core.js";
 
@@ -93,6 +94,22 @@ async function consumeUserToken(
   return row as unknown as Record<string, unknown>;
 }
 
+function clientIp(c: AppContext): string {
+  return (
+    c.req.header("cf-connecting-ip") ??
+    c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
+    "unknown"
+  );
+}
+
+function rateLimited(c: AppContext, retryAfterSec: number) {
+  return c.json(
+    { error: { code: "RATE_LIMITED", message: "Too many attempts. Please try again later." } },
+    429,
+    { "Retry-After": String(Math.max(1, Math.ceil(retryAfterSec))) },
+  );
+}
+
 async function readJson(c: AppContext): Promise<Record<string, unknown>> {
   let body: unknown;
   try {
@@ -130,6 +147,8 @@ auth.post("/register", async (c) => {
     throw new HttpError(400, "Password must be at least 8 characters", "WEAK_PASSWORD");
   }
   const db = getDb(c.env.DB);
+  const regRetry = await rateLimitHit(db, `register:ip:${clientIp(c)}`, 10, 60 * 60);
+  if (regRetry > 0) return rateLimited(c, regRetry);
   const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
   if (existing) throw new HttpError(409, "An account with this email already exists", "USER_EXISTS");
 
@@ -158,12 +177,18 @@ auth.post("/login", async (c) => {
   const email = String(body["email"] ?? "").toLowerCase().trim();
   const password = String(body["password"] ?? "");
   const db = getDb(c.env.DB);
+  const ipRetry = await rateLimitHit(db, `login:ip:${clientIp(c)}`, 30, 15 * 60);
+  if (ipRetry > 0) return rateLimited(c, ipRetry);
+  const emailRetry = await rateLimitPeek(db, `login:email:${email}`, 5, 15 * 60);
+  if (emailRetry > 0) return rateLimited(c, emailRetry);
   const user = await db.query.users.findFirst({
     where: and(eq(users.email, email), isNull(users.deletedAt)),
   });
   if (!user || !user.passwordHash || !(await verifyPassword(password, user.passwordHash))) {
+    await rateLimitHit(db, `login:email:${email}`, 5, 15 * 60);
     return c.json({ error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password" } }, 401);
   }
+  await rateLimitClear(db, `login:email:${email}`);
   let tenantId = user.tenantId;
   const requested = body["tenant_Id"] ?? body["tenantId"];
   if (requested) {
@@ -268,7 +293,10 @@ auth.post("/magiclink", async (c) => {
   const user = await db.query.users.findFirst({
     where: and(eq(users.email, email), isNull(users.deletedAt)),
   });
-  if (user?.tenantId) {
+  const magicLimited =
+    (await rateLimitHit(db, `magic:ip:${clientIp(c)}`, 10, 60 * 60)) > 0 ||
+    (await rateLimitHit(db, `magic:email:${email}`, 3, 60 * 60)) > 0;
+  if (user?.tenantId && !magicLimited) {
     const raw = await issueUserToken(db, {
       userId: user.id,
       email,
@@ -317,7 +345,10 @@ auth.post("/password/reset", async (c) => {
   const user = await db.query.users.findFirst({
     where: and(eq(users.email, email), isNull(users.deletedAt)),
   });
-  if (user) {
+  const resetLimited =
+    (await rateLimitHit(db, `reset:ip:${clientIp(c)}`, 10, 60 * 60)) > 0 ||
+    (await rateLimitHit(db, `reset:email:${email}`, 3, 60 * 60)) > 0;
+  if (user && !resetLimited) {
     const raw = await issueUserToken(db, {
       userId: user.id,
       email,

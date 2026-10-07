@@ -131,6 +131,11 @@ export interface ScrapeContext {
   cssVariables: Record<string, string>;
   cssColors: string[];
   cssFonts: string[];
+  detectedBackground: string;
+  detectedText: string;
+  themeMode: "light" | "dark";
+  visualSignals: { gradients: number; radiusPx: number; avgSaturation: number };
+  toneSignals: Record<string, number>;
 }
 
 export async function buildScrapeContext(inputUrl: string, onStep: (key: string, status: string) => Promise<void> | void = async () => {}): Promise<ScrapeContext> {
@@ -287,8 +292,53 @@ export async function buildScrapeContext(inputUrl: string, onStep: (key: string,
   }
   const cssFonts = [...fontCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([f]) => f);
 
+  // Theme: the real page background/text (body/html rules, then CSS
+  // variables) — not the most frequent accent color in the stylesheet.
+  const bodyBlock = css.match(/\bbody\s*\{([^}]*)\}/i)?.[1] || "";
+  const htmlBlock = css.match(/\bhtml\s*\{([^}]*)\}/i)?.[1] || "";
+  const pickCss = (block: string, re: RegExp): string => toHexColor(block.match(re)?.[1] || "");
+  const detectedBackground =
+    pickCss(bodyBlock, /background(?:-color)?\s*:\s*([^;]+)/i) ||
+    pickCss(htmlBlock, /background(?:-color)?\s*:\s*([^;]+)/i) ||
+    toHexColor(cssVariables["--background"] || "") ||
+    toHexColor(cssVariables["--bg"] || "") ||
+    mixHex(cssColors[0] || "#2563EB", "#FFFFFF", 0.92);
+  const detectedText =
+    pickCss(bodyBlock, /(?:^|;)\s*color\s*:\s*([^;]+)/i) ||
+    (luminance(detectedBackground) < 0.5 ? "#F8FAFC" : "#111827");
+  const themeMode: "light" | "dark" = luminance(detectedBackground) < 0.5 ? "dark" : "light";
+  const gradientCount = (css.match(/linear-gradient\(/gi) || []).length;
+  const radii = [...css.matchAll(/border-radius\s*:\s*(\d+(?:\.\d+)?)px/gi)].map((m) => Number(m[1]));
+  const radiusPx = radii.length ? Math.round(radii.reduce((a, b) => a + b, 0) / radii.length) : 0;
+  const satSample = cssColors.slice(0, 6);
+  const avgSaturation = satSample.length
+    ? Math.round((satSample.reduce((a, col) => a + saturation(col), 0) / satSample.length) * 100) / 100
+    : 0;
+  const visualSignals = { gradients: gradientCount, radiusPx, avgSaturation };
+
+  // Tone signals from the site's own copy (voice, energy, formality).
+  const words = bodyText.split(/\s+/).filter(Boolean);
+  const sentences = bodyText.split(/[.!?]+/).map((x) => x.trim()).filter((x) => x.length > 2);
+  const hits = (re: RegExp) => (bodyText.match(re) || []).length;
+  const per100 = (n: number) => (words.length ? Math.round((n / words.length) * 10000) / 100 : 0);
+  const ctaVerb = /^(get|start|try|book|join|shop|discover|learn|sign|create|download|order|buy|claim|grab|explore)\b/i;
+  const toneSignals: Record<string, number> = {
+    words: words.length,
+    avgSentenceWords: sentences.length ? Math.round((words.length / sentences.length) * 10) / 10 : 0,
+    exclPerSentence: sentences.length ? Math.round((hits(/!/g) / sentences.length) * 100) / 100 : 0,
+    questionsPerSentence: sentences.length ? Math.round((hits(/\?/g) / sentences.length) * 100) / 100 : 0,
+    emoji: hits(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu),
+    youPer100: per100(hits(/\b(you|your|yours)\b/gi)),
+    wePer100: per100(hits(/\b(we|our|us)\b/gi)),
+    imperativeCtaRatio: ctaButtons.length
+      ? Math.round((ctaButtons.filter((b) => ctaVerb.test(b.trim())).length / ctaButtons.length) * 100) / 100
+      : 0,
+    dealWords: hits(/\b(off|sale|discount|free|offer|deal|save|limited)\b/gi),
+    formalMarkers: hits(/\b(please note|furthermore|additionally|we are pleased|our company|hereby)\b/gi),
+  };
+
   await onStep("read", "done");
-  return { url, meta: { ...meta, inlineLogoSvg }, headings, ctaButtons, socialLinks, imageCandidates, headHtml, bodyText, footerText, jsonLdData, cssVariables, cssColors, cssFonts };
+  return { url, meta: { ...meta, inlineLogoSvg }, headings, ctaButtons, socialLinks, imageCandidates, headHtml, bodyText, footerText, jsonLdData, cssVariables, cssColors, cssFonts, detectedBackground, detectedText, themeMode, visualSignals, toneSignals };
 }
 
 /* ---------- Gemini extraction + heuristic fallback ---------- */
@@ -296,8 +346,8 @@ export async function buildScrapeContext(inputUrl: string, onStep: (key: string,
 const PROMPT = (c: ScrapeContext) => `You are a brand intelligence extractor for an ads platform. Analyze the website data and return ONLY valid JSON matching this exact schema:
 {
   "business": { "name": "string", "descriptor": "short line like 'Specialty coffee roastery · Stockholm'", "industry": "string", "location": "city, country", "tagline": "string", "description": "2-3 sentences", "targetAudience": "string", "keyProductsServices": ["string"] },
-  "branding": { "logoUrl": "string", "faviconUrl": "string", "colors": { "primary": "hex", "secondary": "hex", "accent": "hex", "background": "hex" }, "fonts": { "heading": "string", "body": "string" }, "socialLinks": { "instagram": "", "facebook": "", "linkedin": "", "twitter": "", "tiktok": "", "reddit": "", "youtube": "", "pinterest": "" } },
-  "toneOfVoice": ["2-4 short traits, e.g. 'Warm & craft-focused', 'Direct, no jargon'"],
+  "branding": { "logoUrl": "string", "faviconUrl": "string", "colors": { "primary": "hex", "secondary": "hex", "accent": "hex", "background": "hex", "surface": "hex", "text": "hex" }, "fonts": { "heading": "string", "body": "string" }, "brandThemes": ["3-5 short visual-theme descriptors, e.g. 'Dark & premium', 'Bright, rounded & playful', 'Minimal editorial', 'Bold gradients'"], "themeMode": "light or dark", "socialLinks": { "instagram": "", "facebook": "", "linkedin": "", "twitter": "", "tiktok": "", "reddit": "", "youtube": "", "pinterest": "" } },
+  "toneOfVoice": ["3-5 short traits describing how the brand writes and speaks: voice, energy, formality, sentence style — e.g. 'Warm & craft-focused', 'Punchy, short sentences', 'Direct, speaks to you'"],
   "audience": { "ageRange": "e.g. 25-45", "interests": ["string"], "location": "string", "summary": "one line like 'Urban 25–45 · coffee enthusiasts'" },
   "keywords": ["6-10 short keywords"],
   "suggestedCampaigns": [ { "name": "string", "objective": "one of ${OBJECTIVES.join("|")}", "platforms": ["meta","google_ads","tiktok"], "angle": "one line" } ]
@@ -319,6 +369,9 @@ Image candidates: ${JSON.stringify(c.imageCandidates.slice(0, 15))}
 CSS variables: ${JSON.stringify(c.cssVariables)}
 CSS colors: ${JSON.stringify(c.cssColors)}
 CSS fonts: ${JSON.stringify(c.cssFonts)}
+Page background: ${c.detectedBackground} (${c.themeMode} theme); page text color: ${c.detectedText}
+Visual signals (gradient count, avg border-radius px, avg color saturation 0-1): ${JSON.stringify(c.visualSignals)}
+Tone signals from the site's copy: ${JSON.stringify(c.toneSignals)}
 Social links: ${JSON.stringify(c.socialLinks)}
 
 HEAD HTML:
@@ -326,6 +379,86 @@ ${c.headHtml.slice(0, 3000)}
 
 MAIN CONTENT:
 ${c.bodyText.slice(0, 9000)}`;
+
+/* ---------- theme & tone derivation (Gemini normalize + heuristic share these) ---------- */
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) return null;
+  let h = m[1]!;
+  if (h.length === 3) h = h.split("").map((ch) => ch + ch).join("");
+  const n = parseInt(h, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function luminance(hex: string): number {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return 1;
+  return (0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b) / 255;
+}
+
+function saturation(hex: string): number {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return 0;
+  const mx = Math.max(rgb.r, rgb.g, rgb.b) / 255;
+  const mn = Math.min(rgb.r, rgb.g, rgb.b) / 255;
+  return mx === 0 ? 0 : (mx - mn) / mx;
+}
+
+function mixHex(a: string, b: string, t: number): string {
+  const ra = hexToRgb(a);
+  const rb = hexToRgb(b);
+  if (!ra || !rb) return a;
+  const parts = [ra.r, ra.g, ra.b].map((x, i) => Math.round(x + ([rb.r, rb.g, rb.b][i]! - x) * t).toString(16).padStart(2, "0"));
+  return `#${parts.join("")}`;
+}
+
+function toHexColor(v: string): string {
+  const s = String(v || "").trim().toLowerCase();
+  if (/^#[0-9a-f]{3}$/.test(s)) return `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`;
+  if (/^#[0-9a-f]{6}$/.test(s)) return s;
+  const rgb = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(s);
+  if (rgb) return `#${[rgb[1], rgb[2], rgb[3]].map((n) => Number(n).toString(16).padStart(2, "0")).join("")}`;
+  return "";
+}
+
+function deriveThemes(c: ScrapeContext): string[] {
+  const out: string[] = [];
+  const sat = c.visualSignals.avgSaturation;
+  out.push(c.themeMode === "dark" ? "Dark mode aesthetic" : sat > 0.45 ? "Bright & colorful" : "Light & airy");
+  if (sat > 0.55) out.push("Bold & vibrant");
+  else if (sat < 0.22 && c.cssColors.length <= 4) out.push("Muted & understated");
+  if (c.visualSignals.gradients >= 3) out.push("Gradient-rich");
+  if (c.visualSignals.radiusPx >= 12) out.push("Soft, rounded corners");
+  else if (c.visualSignals.radiusPx > 0 && c.visualSignals.radiusPx <= 3) out.push("Sharp, geometric edges");
+  const headingFont = (c.cssFonts[0] || "").toLowerCase();
+  if (/playfair|lora|merriweather|georgia|garamond/.test(headingFont)) out.push("Classic editorial serif");
+  else if (/dancing|pacifico|cursive|handwrit/.test(headingFont)) out.push("Handwritten touches");
+  else if (headingFont) out.push("Clean modern typography");
+  if (c.cssColors.length <= 3 && c.themeMode === "light") out.push("Minimal, lots of whitespace");
+  return [...new Set(out)].slice(0, 5);
+}
+
+function deriveTone(c: ScrapeContext): string[] {
+  const s = c.toneSignals;
+  const scored: [number, string][] = [];
+  if ((s.exclPerSentence ?? 0) >= 0.2 || (s.emoji ?? 0) >= 1) scored.push([3, "Energetic & upbeat"]);
+  if ((s.emoji ?? 0) >= 3) scored.push([2, "Playful, emoji-friendly"]);
+  if ((s.questionsPerSentence ?? 0) >= 0.15) scored.push([2, "Conversational, asks questions"]);
+  if ((s.youPer100 ?? 0) >= 1.2) scored.push([3, "Direct, speaks to you"]);
+  if ((s.avgSentenceWords ?? 0) > 0 && (s.avgSentenceWords ?? 0) <= 12) scored.push([2, "Punchy, short sentences"]);
+  if ((s.avgSentenceWords ?? 0) >= 22) scored.push([2, "Detailed & explanatory"]);
+  if ((s.imperativeCtaRatio ?? 0) >= 0.5) scored.push([2, "Action-driven calls to action"]);
+  if ((s.dealWords ?? 0) >= 3) scored.push([2, "Deal-driven, offer-led"]);
+  if ((s.formalMarkers ?? 0) >= 2) scored.push([2, "Formal & corporate"]);
+  if ((s.wePer100 ?? 0) > (s.youPer100 ?? 0) && (s.formalMarkers ?? 0) < 2) scored.push([1, "Story-led, brand-first"]);
+  const traits = scored.sort((a, b) => b[0] - a[0]).map(([, t]) => t);
+  for (const d of ["Clear & confident", "Professional & trustworthy", "Warm & human"]) {
+    if (traits.length >= 3) break;
+    traits.push(d);
+  }
+  return [...new Set(traits)].slice(0, 5);
+}
 
 function heuristic(c: ScrapeContext): Record<string, any> {
   const host = new URL(c.url).hostname.replace(/^www\./, "");
@@ -335,17 +468,29 @@ function heuristic(c: ScrapeContext): Record<string, any> {
     branding: {
       logoUrl: c.meta.logo,
       faviconUrl: c.meta.favicon,
-      colors: { primary: c.meta.themeColor || c.cssColors[0] || "#2563EB", secondary: c.cssColors[1] || "#64748B", accent: c.cssColors[2] || "#F59E0B", background: "#FFFFFF" },
+      colors: {
+        primary: c.meta.themeColor || c.cssColors[0] || "#2563EB",
+        secondary: c.cssColors[1] || "#64748B",
+        accent: c.cssColors[2] || "#F59E0B",
+        background: c.detectedBackground,
+        surface: mixHex(c.detectedBackground, c.themeMode === "dark" ? "#FFFFFF" : "#000000", 0.06),
+        text: c.detectedText,
+      },
       fonts: { heading: c.cssFonts[0] || "", body: c.cssFonts[1] || c.cssFonts[0] || "" },
+      brandThemes: deriveThemes(c),
+      themeMode: c.themeMode,
       socialLinks: c.socialLinks,
     },
-    toneOfVoice: [],
+    toneOfVoice: deriveTone(c),
     audience: { ageRange: "", interests: [], location: "", summary: "" },
     keywords: c.meta.keywords.slice(0, 10),
     suggestedCampaigns: [],
     _heuristic: true,
   };
 }
+
+const nonEmptyStrings = (o: Record<string, unknown> | undefined): Record<string, string> =>
+  Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => typeof v === "string" && v.trim() !== "")) as Record<string, string>;
 
 function normalize(r: Record<string, any>, c: ScrapeContext): Record<string, any> {
   const h = heuristic(c);
@@ -358,11 +503,13 @@ function normalize(r: Record<string, any>, c: ScrapeContext): Record<string, any
       ...br,
       logoUrl: br.logoUrl || h.branding.logoUrl,
       faviconUrl: br.faviconUrl || h.branding.faviconUrl,
-      colors: { ...h.branding.colors, ...(br.colors || {}) },
-      fonts: { ...h.branding.fonts, ...(br.fonts || {}) },
+      colors: { ...h.branding.colors, ...nonEmptyStrings(br.colors) },
+      fonts: { ...h.branding.fonts, ...nonEmptyStrings(br.fonts) },
+      brandThemes: Array.isArray(br.brandThemes) && br.brandThemes.length ? br.brandThemes.slice(0, 5) : h.branding.brandThemes,
+      themeMode: br.themeMode === "dark" || br.themeMode === "light" ? br.themeMode : h.branding.themeMode,
       socialLinks: { ...h.branding.socialLinks, ...(br.socialLinks || {}) },
     },
-    toneOfVoice: Array.isArray(r.toneOfVoice) ? r.toneOfVoice.slice(0, 4) : [],
+    toneOfVoice: (Array.isArray(r.toneOfVoice) && r.toneOfVoice.length ? r.toneOfVoice : h.toneOfVoice).slice(0, 5),
     audience: { ...h.audience, ...(r.audience || {}) },
     keywords: Array.isArray(r.keywords) && r.keywords.length ? r.keywords.slice(0, 10) : h.keywords,
     suggestedCampaigns: (Array.isArray(r.suggestedCampaigns) ? r.suggestedCampaigns : [])
