@@ -104,6 +104,29 @@ async function toFalRef(u: string): Promise<string> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Keep only reference URLs that actually serve an image. A dead ref (e.g. a
+ * brand logo URL that 404s) makes the fal edit job "complete" with zero
+ * images; dropping it lets the caller fall back to text-to-image instead of
+ * failing the whole generation.
+ */
+async function liveRefs(refUrls: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const u of refUrls.filter(usableRef).slice(0, 3)) {
+    if (/^data:/i.test(u)) { out.push(u); continue; }
+    try {
+      const r = await fetch(u, { signal: AbortSignal.timeout(15000) });
+      const ct = r.headers.get("content-type") || "";
+      if (r.ok && ct.startsWith("image/")) {
+        await r.body?.cancel().catch(() => {});
+        out.push(await toFalRef(u));
+        continue;
+      }
+    } catch { /* dead ref — drop it */ }
+  }
+  return out;
+}
+
 interface QueueOpts { pollIntervalMs?: number; timeoutMs?: number }
 
 /**
@@ -166,7 +189,7 @@ export interface AiCtx {
 /** Text → image (optionally with reference images: logo / master creatives). Returns { imageUrl, prompt, model }. */
 export async function generateAdImage(ctx: AiCtx, prompt: string, aspectRatio = "4:5", refUrls: string[] = []): Promise<{ imageUrl: string; prompt: string; model: string }> {
   const { apiKey } = await falConfig(ctx.env, ctx.db);
-  const refs = await Promise.all(refUrls.filter(usableRef).slice(0, 3).map(toFalRef));
+  const refs = await liveRefs(refUrls);
   const hasRefs = refs.length > 0;
   const model = hasRefs ? MODEL_EDIT : MODEL_T2I;
   const finalPrompt = hasRefs ? prompt : prompt.replace(/[^.]*image_urls\[\d+\][^.]*\./gi, "").trim();
@@ -188,7 +211,7 @@ export async function editAdImage(ctx: AiCtx, prompt: string, imageUrl: string, 
   const { apiKey } = await falConfig(ctx.env, ctx.db);
   if (!usableRef(imageUrl)) throw new Error("A raster reference image URL (PNG/JPG/WEBP) is required");
   const mainRef = await toFalRef(imageUrl);
-  const extra = await Promise.all((extraRefs || []).filter(usableRef).slice(0, 2).map(toFalRef));
+  const extra = await liveRefs(extraRefs || []);
   const payload = {
     prompt: prompt.trim(),
     num_images: 1,
