@@ -13,7 +13,7 @@
 //
 // Super-admin plan CRUD stays in Phase 8.
 import { Hono, type Context } from "hono";
-import { and, count, eq, isNull, sql, sum } from "drizzle-orm";
+import { and, count, eq, isNull, lt, sum } from "drizzle-orm";
 import { getDb, type Db } from "../db/index.js";
 import {
   campaignTemplates,
@@ -110,7 +110,7 @@ async function introOfferFor(db: Db, userId: string) {
     const before = await db
       .select({ n: count() })
       .from(users)
-      .where(sql`createdAt < ${me[0].createdAt}`);
+      .where(lt(users.createdAt, me[0].createdAt));
     rank = Number(before[0]?.n ?? 0) + 1;
   }
   return {
