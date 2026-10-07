@@ -121,18 +121,25 @@ export async function runImageJob(model: string, payload: Record<string, any>, a
     signal: AbortSignal.timeout(30000),
   });
   if (!sub.ok) throw new Error(`fal.ai queue submit ${slug} HTTP ${sub.status}: ${(await sub.text()).slice(0, 400)}`);
-  const { request_id } = (await sub.json()) as { request_id: string };
+  const submitted = (await sub.json()) as { request_id: string; status_url?: string; response_url?: string };
+  const { request_id } = submitted;
   if (!request_id) throw new Error(`fal.ai ${slug} returned no request_id`);
+  // fal returns the poll URLs — use them. Constructing them from the full
+  // model path 405s for endpoint models (…/edit): status/result live under
+  // the app root, not the endpoint. (Template images all failed this way.)
+  const appRoot = model.split("/").slice(0, 2).join("/");
+  const statusUrl = submitted.status_url || `https://queue.fal.run/${appRoot}/requests/${request_id}/status`;
+  const resultUrl = submitted.response_url || `https://queue.fal.run/${appRoot}/requests/${request_id}`;
 
   while (Date.now() - t0 < timeoutMs) {
-    const st = await fetch(`https://queue.fal.run/${model}/requests/${request_id}/status`, {
+    const st = await fetch(statusUrl, {
       headers: { Authorization: `Key ${apiKey}` },
       signal: AbortSignal.timeout(30000),
     });
     if (!st.ok) throw new Error(`fal.ai status ${slug} HTTP ${st.status}`);
     const s = (await st.json()) as { status: string };
     if (s.status === "COMPLETED") {
-      const rr = await fetch(`https://queue.fal.run/${model}/requests/${request_id}`, {
+      const rr = await fetch(resultUrl, {
         headers: { Authorization: `Key ${apiKey}` },
         signal: AbortSignal.timeout(30000),
       });
