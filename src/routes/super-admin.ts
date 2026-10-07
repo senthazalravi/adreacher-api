@@ -12,7 +12,7 @@
 // would lock the admin out of exactly the endpoints that manage shadowing.
 
 import { Hono, type Context } from "hono";
-import { and, asc, count, desc, eq, gte, inArray, isNull, like, lte, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNull, like, lte, or, sql } from "drizzle-orm";
 import { getDb, type Db } from "../db/index.js";
 import {
   agencyClients,
@@ -262,76 +262,82 @@ router.get("/super-admin/tenants", async (c) => {
     ? and(isNull(tenants.deletedAt), like(tenants.name, `%${q}%`))
     : isNull(tenants.deletedAt);
   const rows = await db.select().from(tenants).where(where).orderBy(asc(tenants.name));
-  const data = await Promise.all(
-    rows.map(async (t) => {
-      const owner = t.ownerId
-        ? await db.query.users.findFirst({
-            where: eq(users.id, t.ownerId),
-            columns: { id: true, email: true, firstName: true, lastName: true },
-          })
-        : null;
-      const wsCount = await db
-        .select({ n: count() })
-        .from(workspaces)
-        .where(and(eq(workspaces.account_id, t.id), isNull(workspaces.deletedAt)));
-      const sub = await db.query.subscriptions.findFirst({
-        where: eq(subscriptions.account_id, t.id),
-        orderBy: [desc(subscriptions.createdAt)],
-      });
-      let plan: { slug: string; name: string } | null = null;
-      if (sub?.plan_id) {
-        const p = await db.query.subscriptionPlans.findFirst({
-          where: eq(subscriptionPlans.id, sub.plan_id),
-        });
-        if (p) plan = { slug: p.slug, name: p.name };
-      }
-      // Fetch workspaces for this tenant (frontend expects array)
-      const wsRows = await db
-        .select({ id: workspaces.id, name: workspaces.name, onboardingState: workspaces.onboardingState })
-        .from(workspaces)
-        .where(and(eq(workspaces.account_id, t.id), isNull(workspaces.deletedAt)));
-      // Count members across workspaces
-      const wsIds = wsRows.map((w) => w.id);
-      let memberCount = 0;
-      if (wsIds.length > 0) {
-        const mc = await db
-          .select({ n: count() })
-          .from(workspaceMembers)
-          .where(inArray(workspaceMembers.workspace_id, wsIds));
-        memberCount = mc[0]?.n ?? 0;
-      }
-      return {
-        id: t.id,
-        name: t.name,
-        slug: t.slug,
-        type: t.type,
-        status: t.status,
-        tenant_Id: t.id,
-        planSlug: t.planSlug,
-        billingEmail: t.billingEmail,
-        contactPerson: t.contactPerson,
-        country: t.country,
-        createdAt: t.createdAt,
-        owner: owner
-          ? { id: owner.id, email: owner.email, firstName: owner.firstName, lastName: owner.lastName }
-          : null,
-        workspaceCount: wsCount[0]?.n ?? 0,
-        workspaces: wsRows.map((w) => ({ id: w.id, name: w.name, onboardingState: w.onboardingState ?? 'pending' })),
-        memberCount,
-        features: {},
-        subscription: sub
-          ? {
-              id: sub.id,
-              status: sub.status,
-              planId: sub.plan_id,
-              planSlug: plan?.slug ?? null,
-              planName: plan?.name ?? null,
-              trialEndsAt: sub.trialEndsAt,
-            }
-          : null,
-      };
-    }),
-  );
+  const tenantIds = rows.map((t) => t.id);
+  if (tenantIds.length === 0) return c.json({ data: [] });
+
+  // Batched lookups (was ~6 sequential queries per tenant — the page took
+  // seconds and looked stuck; now one query per relation for all tenants).
+  const ownerIds = [...new Set(rows.map((t) => t.ownerId).filter((v): v is string => !!v))];
+  const [ownerRows, wsRows, subRows] = await Promise.all([
+    ownerIds.length > 0
+      ? db.select({ id: users.id, email: users.email, firstName: users.firstName, lastName: users.lastName }).from(users).where(inArray(users.id, ownerIds))
+      : Promise.resolve([] as Array<{ id: string; email: string; firstName: string | null; lastName: string | null }>),
+    db.select({ id: workspaces.id, name: workspaces.name, onboardingState: workspaces.onboardingState, account_id: workspaces.account_id })
+      .from(workspaces)
+      .where(and(inArray(workspaces.account_id, tenantIds), isNull(workspaces.deletedAt))),
+    db.select().from(subscriptions).where(inArray(subscriptions.account_id, tenantIds)).orderBy(desc(subscriptions.createdAt)),
+  ]);
+  const ownerById = new Map(ownerRows.map((o) => [o.id, o]));
+  const wsByTenant = new Map<string, typeof wsRows>();
+  for (const w of wsRows) {
+    const list = wsByTenant.get(w.account_id) ?? [];
+    list.push(w);
+    wsByTenant.set(w.account_id, list);
+  }
+  // Latest subscription per tenant (rows are newest-first).
+  const subByTenant = new Map<string, (typeof subRows)[number]>();
+  for (const sub of subRows) if (!subByTenant.has(sub.account_id)) subByTenant.set(sub.account_id, sub);
+  const planIds = [...new Set([...subByTenant.values()].map((s2) => s2.plan_id).filter((v): v is string => !!v))];
+  const wsIds = wsRows.map((w) => w.id);
+  const [planRows, memberCountRows] = await Promise.all([
+    planIds.length > 0
+      ? db.select().from(subscriptionPlans).where(inArray(subscriptionPlans.id, planIds))
+      : Promise.resolve([] as Array<{ id: string; slug: string; name: string }>),
+    wsIds.length > 0
+      ? db.select({ workspace_id: workspaceMembers.workspace_id, n: count() }).from(workspaceMembers).where(inArray(workspaceMembers.workspace_id, wsIds)).groupBy(workspaceMembers.workspace_id)
+      : Promise.resolve([] as Array<{ workspace_id: string | null; n: number }>),
+  ]);
+  const planById = new Map(planRows.map((pl) => [pl.id, pl]));
+  const membersByWs = new Map(memberCountRows.map((m) => [m.workspace_id, m.n]));
+
+  const data = rows.map((t) => {
+    const owner = t.ownerId ? ownerById.get(t.ownerId) ?? null : null;
+    const tenantWs = wsByTenant.get(t.id) ?? [];
+    const sub = subByTenant.get(t.id);
+    const plan = sub?.plan_id ? planById.get(sub.plan_id) : undefined;
+    let memberCount = 0;
+    for (const w of tenantWs) memberCount += membersByWs.get(w.id) ?? 0;
+    return {
+      id: t.id,
+      name: t.name,
+      slug: t.slug,
+      type: t.type,
+      status: t.status,
+      tenant_Id: t.id,
+      planSlug: t.planSlug,
+      billingEmail: t.billingEmail,
+      contactPerson: t.contactPerson,
+      country: t.country,
+      createdAt: t.createdAt,
+      owner: owner
+        ? { id: owner.id, email: owner.email, firstName: owner.firstName, lastName: owner.lastName }
+        : null,
+      workspaceCount: tenantWs.length,
+      workspaces: tenantWs.map((w) => ({ id: w.id, name: w.name, onboardingState: w.onboardingState ?? 'pending' })),
+      memberCount,
+      features: {},
+      subscription: sub
+        ? {
+            id: sub.id,
+            status: sub.status,
+            planId: sub.plan_id,
+            planSlug: plan?.slug ?? null,
+            planName: plan?.name ?? null,
+            trialEndsAt: sub.trialEndsAt,
+          }
+        : null,
+    };
+  });
   return c.json({ data });
 });
 
@@ -635,45 +641,57 @@ router.get("/super-admin/users", async (c) => {
     .limit(limit)
     .offset(offset);
 
-  const data = await Promise.all(
-    rows.map(async (u) => {
-      const memberships = await db
+  // Batched (was 3 queries per user): memberships, workspaces, tenants.
+  const userIds = rows.map((u) => u.id);
+  const membershipRows = userIds.length
+    ? await db
         .select({
+          member_id: workspaceMembers.member_id,
           workspace_id: workspaceMembers.workspace_id,
           role: workspaceMembers.role,
           status: workspaceMembers.status,
         })
         .from(workspaceMembers)
-        .where(eq(workspaceMembers.member_id, u.id));
-      const wsIds = [
-        ...new Set(memberships.map((m) => m.workspace_id).filter((v): v is string => !!v)),
-      ];
-      const wsRows =
-        wsIds.length > 0
-          ? await db
-              .select({ id: workspaces.id, name: workspaces.name })
-              .from(workspaces)
-              .where(and(inArray(workspaces.id, wsIds), isNull(workspaces.deletedAt)))
-          : [];
-      const wsName = new Map(wsRows.map((w) => [w.id, w.name]));
-      const tenantRow = u.tenantId
-        ? await db.query.tenants.findFirst({ where: eq(tenants.id, u.tenantId) })
-        : null;
-      return {
-        ...publicUser(u as unknown as Record<string, any>),
-        tenant: tenantRow
-          ? { id: tenantRow.id, name: tenantRow.name, type: tenantRow.type, status: tenantRow.status }
-          : null,
-        memberships: memberships.map((m) => ({
-          workspaceId: m.workspace_id,
-          workspaceName: wsName.get(m.workspace_id ?? "") ?? null,
-          role: m.role,
-          status: m.status,
-        })),
-      };
-    }),
-  );
-  return c.json({ data, pagination: pagination(total, limit, offset) });
+        .where(inArray(workspaceMembers.member_id, userIds))
+    : [];
+  const allWsIds = [...new Set(membershipRows.map((m) => m.workspace_id).filter((v): v is string => !!v))];
+  const allTenantIds = [...new Set(rows.map((u) => u.tenantId).filter((v): v is string => !!v))];
+  const [wsRows, tenantRows] = await Promise.all([
+    allWsIds.length
+      ? db.select({ id: workspaces.id, name: workspaces.name }).from(workspaces).where(and(inArray(workspaces.id, allWsIds), isNull(workspaces.deletedAt)))
+      : Promise.resolve([] as Array<{ id: string; name: string }>),
+    allTenantIds.length
+      ? db.select().from(tenants).where(inArray(tenants.id, allTenantIds))
+      : Promise.resolve([] as Array<Record<string, any>>),
+  ]);
+  const wsName = new Map(wsRows.map((w) => [w.id, w.name]));
+  const tenantById = new Map(tenantRows.map((t) => [t.id as string, t]));
+  const membershipsByUser = new Map<string, typeof membershipRows>();
+  for (const m of membershipRows) {
+    if (!m.member_id) continue;
+    const list = membershipsByUser.get(m.member_id) ?? [];
+    list.push(m);
+    membershipsByUser.set(m.member_id, list);
+  }
+  const data = rows.map((u) => {
+    const memberships = membershipsByUser.get(u.id) ?? [];
+    const tenantRow = u.tenantId ? tenantById.get(u.tenantId) : undefined;
+    return {
+      ...publicUser(u as unknown as Record<string, any>),
+      tenant: tenantRow
+        ? { id: tenantRow.id, name: tenantRow.name, type: tenantRow.type, status: tenantRow.status }
+        : null,
+      memberships: memberships.map((m) => ({
+        workspaceId: m.workspace_id,
+        workspaceName: wsName.get(m.workspace_id ?? "") ?? null,
+        role: m.role,
+        status: m.status,
+      })),
+    };
+  });
+  const pg = pagination(total, limit, offset);
+  // `meta` mirrors `pagination` — the frontend reads data.meta.total/pages.
+  return c.json({ data, pagination: pg, meta: { total: pg.total, pages: pg.pages, page: pg.page, limit: pg.limit } });
 });
 
 /** POST /super-admin/users/:id/grant-tenant-admin — flip the user's tenant to agency. */
@@ -1128,19 +1146,29 @@ router.post("/super-admin/jobs/:name", async (c) => {
  * summed usage_counters by metric key. Platform-admin only (router guard). */
 router.get("/workers/metrics", async (c) => {
   const db = getDb(c.env.DB);
-  const runs = await db.select().from(jobRuns).orderBy(desc(jobRuns.startedAt)).limit(2000);
-  const dayAgo = new Date(Date.now() - 24 * 3600_000);
+  // Aggregate in SQL — fetching up to 2,000 raw run rows just to count them
+  // made this endpoint take ~2s. One grouped query returns the same numbers.
+  const dayAgoSec = Math.floor((Date.now() - 24 * 3600_000) / 1000);
+  const aggRows = await db
+    .select({
+      name: jobRuns.name,
+      status: jobRuns.status,
+      n: count(),
+      recent: sql<number>`sum(case when ${jobRuns.startedAt} >= ${dayAgoSec} then 1 else 0 end)`,
+    })
+    .from(jobRuns)
+    .groupBy(jobRuns.name, jobRuns.status);
   const jobs: Record<string, { total: number; completed: number; failed: number; processing: number; last24h: number }> = {};
-  for (const r of runs) {
-    const row = r as unknown as Record<string, any>;
-    const name = String(row["name"] ?? "unknown");
+  let recordedRuns = 0;
+  for (const r of aggRows) {
+    const name = String(r.name ?? "unknown");
     const agg = jobs[name] ?? { total: 0, completed: 0, failed: 0, processing: 0, last24h: 0 };
-    agg.total += 1;
-    if (row["status"] === "completed") agg.completed += 1;
-    else if (row["status"] === "failed") agg.failed += 1;
-    else agg.processing += 1;
-    const started = row["startedAt"] instanceof Date ? row["startedAt"] : new Date(row["startedAt"]);
-    if (!Number.isNaN(started.getTime()) && started >= dayAgo) agg.last24h += 1;
+    agg.total += r.n;
+    recordedRuns += r.n;
+    if (r.status === "completed") agg.completed += r.n;
+    else if (r.status === "failed") agg.failed += r.n;
+    else agg.processing += r.n;
+    agg.last24h += Number(r.recent) || 0;
     jobs[name] = agg;
   }
   const counters = await db.select().from(usageCounters).limit(2000);
@@ -1150,7 +1178,7 @@ router.get("/workers/metrics", async (c) => {
     const key = String(row["metricKey"] ?? "unknown");
     usage[key] = (usage[key] ?? 0) + (Number(row["count"]) || 0);
   }
-  return c.json({ data: { jobs, usage, recordedRuns: runs.length } });
+  return c.json({ data: { jobs, usage, recordedRuns } });
 });
 
 // ---------------------------------------------------------------------------
