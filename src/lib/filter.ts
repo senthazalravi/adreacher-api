@@ -56,7 +56,7 @@ function coerceValue(column: AnySQLiteColumn, value: unknown): unknown {
   if (typeof value !== "string" || !isTimestampColumn(column)) return value;
   const t = Date.parse(value);
   if (Number.isNaN(t)) return value;
-  return Math.floor(t / 1000);
+  return new Date(t);
 }
 
 function compileOperator(column: AnySQLiteColumn, field: string, op: string, value: unknown): SQL {
