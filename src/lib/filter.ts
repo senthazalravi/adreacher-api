@@ -30,9 +30,9 @@ export class HttpError extends Error {
   }
 }
 
-type Operator = "eq" | "ne" | "in" | "nin" | "gt" | "gte" | "lt" | "lte" | "icontains" | "arraycontains" | "jsonbContains";
+type Operator = "eq" | "ne" | "in" | "nin" | "gt" | "gte" | "lt" | "lte" | "icontains" | "arraycontains" | "jsonbContains" | "is";
 
-const OPERATORS: readonly Operator[] = ["eq", "ne", "in", "nin", "gt", "gte", "lt", "lte", "icontains", "arraycontains", "jsonbContains"];
+const OPERATORS: readonly Operator[] = ["eq", "ne", "in", "nin", "gt", "gte", "lt", "lte", "icontains", "arraycontains", "jsonbContains", "is"];
 
 function isOperator(op: string): op is Operator {
   return (OPERATORS as readonly string[]).includes(op);
@@ -62,6 +62,15 @@ function compileOperator(column: AnySQLiteColumn, field: string, op: string, val
       }
       if (value.length === 0) return sql`1 = ${op === "in" ? 0 : 1}`;
       return (op === "in" ? inArray(column, value) : notInArray(column, value)) as SQL;
+    }
+    case "is": {
+      // Null checks, Baasix-style: { is: null } | { is: { not: null } } | { is: value }
+      if (value === null || value === undefined) return isNull(column);
+      if (typeof value === "object" && !Array.isArray(value) && "not" in (value as Record<string, unknown>)) {
+        const inner = (value as Record<string, unknown>)["not"];
+        return inner === null || inner === undefined ? isNotNull(column) : ne(column, inner as string | number);
+      }
+      return eq(column, value as string | number);
     }
     case "gt":
       return gt(column, value as string | number);
