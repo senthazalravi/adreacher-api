@@ -1109,7 +1109,7 @@ router.get("/super-admin/jobs", async (c) => {
     arr.push(row);
     byName.set(row["name"] as string, arr);
   }
-  const data = Object.entries(JOBS).map(([name, def]) => {
+  const jobs = Object.entries(JOBS).map(([name, def]) => {
     const rs = byName.get(name) ?? [];
     const last = rs[0] ?? null;
     return {
@@ -1119,11 +1119,22 @@ router.get("/super-admin/jobs", async (c) => {
       lastRun: last ? last["startedAt"] : null,
       lastStatus: last ? last["status"] : null,
       lastDurationMs: last ? last["durationMs"] : null,
+      lastResult: last ? (last["result"] ?? null) : null,
+      lastError: last ? (last["error"] ?? null) : null,
       runs: rs.length,
       failures: rs.filter((r) => r["status"] === "failed").length,
+      history: rs.slice(0, 10).map((r) => ({
+        id: r["id"],
+        at: r["startedAt"],
+        status: r["status"],
+        durationMs: r["durationMs"] ?? null,
+        summary: r["result"] ?? null,
+      })),
     };
   });
-  return c.json({ data, recordedRuns: runs.length });
+  // The admin Workers page reads { jobs, recordedRuns } — a bare array here
+  // unwrapped to `data.jobs === undefined` and rendered a permanently blank page.
+  return c.json({ data: { jobs, recordedRuns: runs.length } });
 });
 
 /** POST /super-admin/jobs/:name — run a registered job inline, recorded in job_runs. */
