@@ -13,7 +13,7 @@
 //
 // Super-admin plan CRUD stays in Phase 8.
 import { Hono, type Context } from "hono";
-import { and, count, eq, isNull, sum } from "drizzle-orm";
+import { and, count, eq, isNull, sql, sum } from "drizzle-orm";
 import { getDb, type Db } from "../db/index.js";
 import {
   campaignTemplates,
@@ -22,6 +22,7 @@ import {
   platformConnections,
   subscriptionPlans,
   subscriptions,
+  users,
   usageCounters,
   workspaceMembers,
   workspaces,
@@ -91,6 +92,45 @@ const monthPeriodStart = (): Date => {
 export const billingRouter = new Hono<{ Bindings: Env }>();
 billingRouter.use(authMiddleware);
 billingRouter.use(tenantStatusGuard);
+
+/* ------------------------------------------------------------------ */
+/* Intro offer: the first 1,000 registered users get Pro at ₹100/year. */
+/* Rank is by registration order, so early users keep their intro price */
+/* even after the offer fills up.                                       */
+/* ------------------------------------------------------------------ */
+export const INTRO_OFFER_LIMIT = 1000;
+export const INTRO_PLAN_SLUG = "pro";
+
+async function introOfferFor(db: Db, userId: string) {
+  const me = await db.select({ createdAt: users.createdAt }).from(users).where(eq(users.id, userId)).limit(1);
+  const totalRows = await db.select({ n: count() }).from(users);
+  const totalUsers = Number(totalRows[0]?.n ?? 0);
+  let rank = totalUsers;
+  if (me[0]) {
+    const before = await db
+      .select({ n: count() })
+      .from(users)
+      .where(sql`createdAt < ${me[0].createdAt}`);
+    rank = Number(before[0]?.n ?? 0) + 1;
+  }
+  return {
+    limit: INTRO_OFFER_LIMIT,
+    priceInr: 100,
+    interval: "year",
+    planSlug: INTRO_PLAN_SLUG,
+    registeredUsers: totalUsers,
+    spotsLeft: Math.max(0, INTRO_OFFER_LIMIT - totalUsers),
+    eligible: rank <= INTRO_OFFER_LIMIT,
+    rank,
+  };
+}
+
+billingRouter.get("/billing/intro-offer", async (c) => {
+  const db = getDb(c.env.DB);
+  const session = sessionOf(c);
+  if (!session?.userId) throw new HttpError(401, "Authentication required", "UNAUTHORIZED");
+  return c.json({ data: await introOfferFor(db, session.userId) });
+});
 
 billingRouter.get("/billing/plans", async (c) => {
   const db = getDb(c.env.DB);
@@ -267,6 +307,15 @@ billingRouter.post("/billing/checkout", async (c) => {
     : [];
   const plan = (plans[0] as unknown as Record<string, any> | undefined) ?? null;
   if (!plan || !plan.isActive) throw new HttpError(404, `Plan '${slug}' not found`, "NOT_FOUND");
+  // Intro offer: Pro is ₹100/year for the first 1,000 registered users only.
+  if (plan.slug === INTRO_PLAN_SLUG) {
+    const session = sessionOf(c);
+    const intro = await introOfferFor(db, session?.userId ?? "");
+    if (!intro.eligible) {
+      throw new HttpError(403, "The intro offer is fully claimed — all 1,000 spots are taken", "INTRO_OFFER_FULL");
+    }
+  }
+
   // Custom plans are assigned by an administrator, never bought — the slug is guessable.
   if (plan.isPublic === false) throw new HttpError(403, "This plan is not available for self-service purchase", "FORBIDDEN");
 
