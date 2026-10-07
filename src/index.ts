@@ -86,14 +86,6 @@ app.use("*", async (c, next) => {
   c.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
 });
 
-app.get("/health/db", async (c) => {
-  // DB round-trip probe: three sequential trivial queries, timed server-side.
-  const db = getDb(c.env.DB);
-  const t0 = Date.now();
-  for (let n = 0; n < 3; n++) await db.select({ n: count() }).from(users);
-  return c.json({ ok: true, dbMs: Date.now() - t0, perQueryMs: Math.round((Date.now() - t0) / 3) });
-});
-
 app.get("/health", (c) => c.json({ data: { status: "ok" } }));
 
 // Public Stripe webhook — registered BEFORE any "/"-mounted sub-app: those
