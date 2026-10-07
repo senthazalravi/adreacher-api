@@ -7,11 +7,15 @@ import { getDb, type Db } from "../db/index.js";
 import { tenants } from "../db/schema/index.js";
 import type { Env } from "../index.js";
 import { recordRun } from "../lib/job-runs.js";
+import type { AiEnv } from "../lib/ai-text.js";
+
+type AiEnvLike = AiEnv;
 import { runAnalyticsSync } from "./analytics-sync.js";
 import { runAutoLoop } from "./auto-loop.js";
 import { runConnectionHealth } from "./connection-health.js";
 import { runCreativeTopup } from "./creative-topup.js";
 import { runPostPublisher } from "./post-publisher.js";
+import { resumeTemplateGenerations } from "../lib/templates.js";
 
 export interface JobCtx {
   db: Db;
@@ -69,6 +73,11 @@ export const JOBS: Record<string, JobDef> = {
     cron: "10 2 * * *",
     description: "Nightly 02:10 UTC: top up the Approve queue to 6 pending for active AI workspaces.",
     run: runCreativeTopup,
+  },
+  "template-generator": {
+    cron: "*/2 * * * *",
+    description: "Every 2m: finish any stuck AI template generations (copy + images).",
+    run: async (ctx) => resumeTemplateGenerations(ctx.db, ctx.r2, ctx.env as AiEnvLike, 2),
   },
   "post-publisher": {
     cron: "* * * * *",

@@ -304,6 +304,65 @@ export async function generateTemplatesForBrand(
   return startGoogleTemplateGeneration(db, r2, env, { ws: { id: workspaceId, accountId }, uid });
 }
 
+/**
+ * Cron driver: advance stuck/unfinished auto-generated templates.
+ * In-request generation runs die when the isolate is recycled (rows stay
+ * `generating` forever and the UI banner never clears), so a scheduled job
+ * picks them back up. Claims a row before working on it so overlapping
+ * invocations never double-spend AI credits on the same template.
+ */
+export async function resumeTemplateGenerations(
+  db: Db,
+  r2: R2Bucket,
+  env: AiEnv,
+  limit = 2,
+): Promise<{ advanced: number; ready: number; failed: number; pending: number }> {
+  const rows = (await db.select().from(campaignTemplates).limit(1000)) as unknown as Record<string, any>[];
+  const stuck = rows.filter((r) => {
+    if (!r.workspace_id || r.definition?.source !== "auto_generated") return false;
+    const st = r.definition?.generationStatus || "ready";
+    const img = r.definition?.adConfig?.imageStatus ?? "ready";
+    if (st === "generating") return true;
+    return st === "ready" && (img === "pending" || img === "failed");
+  });
+  const staleBefore = Date.now() - 8 * 60 * 1000;
+  let advanced = 0, ready = 0, failed = 0;
+  for (const row of stuck) {
+    if (advanced >= limit) break;
+    const claimedAt = row.definition?.generationClaimedAt ? Date.parse(row.definition.generationClaimedAt) : 0;
+    if (claimedAt > staleBefore) continue; // another invocation is on it
+    const catId = row.definition?.platformConfig?.catalogId as string | undefined;
+    const entry = GOOGLE_TEMPLATE_CATALOG.find((e) => e.id === catId);
+    if (!entry) continue;
+    if (active.has(row.workspace_id)) continue;
+    const brand = await brandFor(db, row.workspace_id);
+    if (!brand.name || brand.name === "Your Brand") continue;
+    await db
+      .update(campaignTemplates)
+      .set({
+        definition: { ...row.definition, generationStatus: "generating", generationClaimedAt: new Date().toISOString() },
+        updatedAt: new Date(),
+      })
+      .where(eq(campaignTemplates.id, row.id))
+      .catch(() => {});
+    const run = generateOneTemplate(db, r2, env, {
+      ws: { id: row.workspace_id, accountId: row.account_id },
+      uid: null,
+      brand,
+      entry,
+    });
+    active.set(row.workspace_id, run);
+    try {
+      const r = await run;
+      advanced++;
+      if (r.status === "ready") ready++; else failed++;
+    } finally {
+      active.delete(row.workspace_id);
+    }
+  }
+  return { advanced, ready, failed, pending: Math.max(0, stuck.length - advanced) };
+}
+
 /** Counts the frontend also derives client-side; offered for parity with the v1 API. */
 export async function templateGenerationStatus(db: Db, workspaceId: string): Promise<Record<string, any>> {
   const rows = (await db.select().from(campaignTemplates).where(eq(campaignTemplates.workspace_id, workspaceId)).limit(200)) as unknown as Record<string, any>[];
