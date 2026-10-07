@@ -17,6 +17,9 @@ import onboardingRouter from "./routes/onboarding.js";
 import { dispatchCron } from "./jobs/index.js";
 import { authMiddleware, tenantStatusGuard } from "./lib/auth.js";
 import { HttpError } from "./lib/filter.js";
+import { getDb } from "./db/index.js";
+import { count } from "drizzle-orm";
+import { users } from "./db/schema/index.js";
 
 export type Env = {
   DB: D1Database;
@@ -58,6 +61,14 @@ app.use("*", async (c, next) => {
   c.header("X-Frame-Options", "DENY");
   c.header("Referrer-Policy", "no-referrer");
   c.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+});
+
+app.get("/health/db", async (c) => {
+  // DB round-trip probe: three sequential trivial queries, timed server-side.
+  const db = getDb(c.env.DB);
+  const t0 = Date.now();
+  for (let n = 0; n < 3; n++) await db.select({ n: count() }).from(users);
+  return c.json({ ok: true, dbMs: Date.now() - t0, perQueryMs: Math.round((Date.now() - t0) / 3) });
 });
 
 app.get("/health", (c) => c.json({ data: { status: "ok" } }));

@@ -64,12 +64,15 @@ export async function authenticate(c: Context<{ Bindings: Env }>): Promise<Sessi
   if (!payload || payload.type !== "access") throw new UnauthorizedError();
 
   const db = getDb(c.env.DB);
-  const user = await db.query.users.findFirst({
-    where: and(eq(users.id, payload.sub), isNull(users.deletedAt)),
-  });
+  // Independent lookups — run them together. Each D1 round trip is costly
+  // enough that sequential awaits here taxed every authenticated request.
+  const [user, tenant] = await Promise.all([
+    db.query.users.findFirst({
+      where: and(eq(users.id, payload.sub), isNull(users.deletedAt)),
+    }),
+    db.query.tenants.findFirst({ where: eq(tenants.id, payload.tenantId) }),
+  ]);
   if (!user) throw new UnauthorizedError();
-
-  const tenant = await db.query.tenants.findFirst({ where: eq(tenants.id, payload.tenantId) });
   if (!tenant || tenant.deletedAt) throw new UnauthorizedError();
 
   return {
